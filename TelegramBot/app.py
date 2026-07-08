@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ПОЛНАЯ СЕРВЕРНАЯ ВЕРСИЯ, С ПРАВИЛЬНЫМИ ПУТЯМИ)
+# app.py — APEX REPORT (ПОЛНАЯ ВЕРСИЯ)
 import os
 import sys
 import json
@@ -34,12 +34,10 @@ BOT_NAME = 'APEX REPORT'
 # ===== ПУТИ (С ПРОВЕРКОЙ) =====
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Пробуем разные варианты папки с сессиями
 possible_sessions_dirs = [
     os.path.join(BASE_DIR, 'sessions'),
     os.path.join(BASE_DIR, 'сессии'),
     os.path.join(BASE_DIR, '..', 'sessions'),
-    os.path.join(os.path.dirname(BASE_DIR), 'sessions'),
 ]
 
 SESSIONS_DIR = None
@@ -50,7 +48,6 @@ for d in possible_sessions_dirs:
         break
 
 if not SESSIONS_DIR:
-    # Если папки нет — создаём
     SESSIONS_DIR = os.path.join(BASE_DIR, 'sessions')
     os.makedirs(SESSIONS_DIR, exist_ok=True)
     print(f"[INFO] Создана папка с сессиями: {SESSIONS_DIR}")
@@ -592,8 +589,10 @@ class ContentAnalyzer:
             "count": len(messages)
         }, None
 
+# ===== ВТОРОЙ БОТ (ДЛЯ ПОДПИСОК) =====
 async def run_subscription_bot():
     try:
+        print("[SUB-BOT] Попытка запуска...")
         bot = TelegramClient('subscription_bot', API_ID, API_HASH)
         await bot.start(bot_token=SUBSCRIPTION_BOT_TOKEN)
         print("[SUB-BOT] Бот для подписок запущен")
@@ -674,7 +673,7 @@ async def run_subscription_bot():
 
         await bot.run_until_disconnected()
     except Exception as e:
-        print(f"[SUB-BOT] Ошибка: {e}")
+        print(f"[SUB-BOT] КРИТИЧЕСКАЯ ОШИБКА: {e}")
 
 # ===== ГЛАВНЫЙ БОТ =====
 async def main_bot():
