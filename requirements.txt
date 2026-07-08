@@ -1,0 +1,4 @@
+telethon
+matplotlib
+requests
+fpdf
