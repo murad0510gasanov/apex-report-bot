@@ -598,6 +598,9 @@ async def run_subscription_bot():
         await bot.start(bot_token=SUBSCRIPTION_BOT_TOKEN)
         print("[SUB-BOT] Бот для подписок запущен")
 
+        # Словарь для хранения состояний пользователей
+        user_states = {}
+
         @bot.on(events.NewMessage(pattern='/start'))
         async def start_handler(event):
             await event.delete()
@@ -612,8 +615,9 @@ async def run_subscription_bot():
         @bot.on(events.CallbackQuery)
         async def handle_sub_callbacks(event):
             await event.answer()
+            user_id = event.sender_id
             data = event.data.decode('utf-8')
-            
+
             if data == "sub_list":
                 subs = load_subs()
                 if not subs:
@@ -625,7 +629,7 @@ async def run_subscription_bot():
                     text += f"{status} {uid} до {data.get('expiry', '—')[:10]}\n"
                 await event.edit(text, buttons=[[KeyboardButtonCallback("🔙 Назад", b"sub_back")]])
                 return
-            
+
             if data == "sub_requests":
                 reqs = load_requests()
                 if not reqs:
@@ -636,54 +640,21 @@ async def run_subscription_bot():
                     text += f"🆔 {r.get('user_id')} — {r.get('time')}\n"
                 await event.edit(text, buttons=[[KeyboardButtonCallback("🔙 Назад", b"sub_back")]])
                 return
-            
+
             if data == "sub_give":
+                # Устанавливаем состояние ожидания ввода
+                user_states[user_id] = 'waiting_give'
                 await event.edit("➕ ВЫДАТЬ ПОДПИСКУ\n\nОтправь ID и количество дней:\nПример: 123456789 7", 
-                    buttons=[[KeyboardButtonCallback("🔙 Назад", b"sub_back")]])
-                # Устанавливаем состояние
-                async def wait_for_give(event):
-                    if event.message.text.startswith('/'):
-                        return
-                    parts = event.message.text.split()
-                    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
-                        await event.reply("❌ Неверный формат. Отправь: ID дни")
-                        return
-                    uid, days = parts[0], int(parts[1])
-                    subs = load_subs()
-                    expiry = datetime.now() + timedelta(days=days)
-                    subs[uid] = {'expiry': expiry.isoformat()}
-                    save_subs(subs)
-                    await event.reply(f"✅ Подписка выдана {uid} на {days} дней")
-                    await event.delete()
-                # Временный обработчик
-                @bot.on(events.NewMessage)
-                async def temp_handler(event):
-                    await wait_for_give(event)
+                    buttons=[[KeyboardButtonCallback("🔙 Отмена", b"sub_back")]])
                 return
-            
+
             if data == "sub_remove":
+                # Устанавливаем состояние ожидания ввода
+                user_states[user_id] = 'waiting_remove'
                 await event.edit("🗑️ УДАЛИТЬ ПОДПИСКУ\n\nОтправь ID пользователя:\nПример: 123456789",
-                    buttons=[[KeyboardButtonCallback("🔙 Назад", b"sub_back")]])
-                async def wait_for_remove(event):
-                    if event.message.text.startswith('/'):
-                        return
-                    uid = event.message.text.strip()
-                    if not uid.isdigit():
-                        await event.reply("❌ Введи числовой ID.")
-                        return
-                    subs = load_subs()
-                    if uid in subs:
-                        del subs[uid]
-                        save_subs(subs)
-                        await event.reply(f"✅ Подписка удалена для {uid}")
-                    else:
-                        await event.reply(f"❌ ID {uid} не найден")
-                    await event.delete()
-                @bot.on(events.NewMessage)
-                async def temp_remove_handler(event):
-                    await wait_for_remove(event)
+                    buttons=[[KeyboardButtonCallback("🔙 Отмена", b"sub_back")]])
                 return
-            
+
             if data == "sub_back":
                 buttons = [
                     [KeyboardButtonCallback("📋 Список подписчиков", b"sub_list")],
@@ -691,13 +662,51 @@ async def run_subscription_bot():
                     [KeyboardButtonCallback("➕ Выдать подписку", b"sub_give")],
                     [KeyboardButtonCallback("🗑️ Удалить подписку", b"sub_remove")]
                 ]
+                # Очищаем состояние при возврате
+                user_states.pop(user_id, None)
                 await event.edit("🔑 БОТ ДЛЯ ВЫДАЧИ ПОДПИСОК\n\nВыбери действие:", buttons=buttons)
                 return
 
         @bot.on(events.NewMessage)
         async def handle_sub_messages(event):
-            # Этот обработчик для остальных сообщений (если не попали в коллбэки)
-            pass
+            user_id = event.sender_id
+            state = user_states.get(user_id)
+            
+            # Если пользователь не в состоянии ожидания — игнорируем
+            if not state:
+                return
+
+            # Удаляем сообщение пользователя
+            await event.delete()
+
+            if state == 'waiting_give':
+                parts = event.message.text.split()
+                if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+                    await event.reply("❌ Неверный формат. Отправь: ID дни")
+                    return
+                uid, days = parts[0], int(parts[1])
+                subs = load_subs()
+                expiry = datetime.now() + timedelta(days=days)
+                subs[uid] = {'expiry': expiry.isoformat()}
+                save_subs(subs)
+                await event.reply(f"✅ Подписка выдана {uid} на {days} дней")
+                # Сбрасываем состояние
+                user_states.pop(user_id, None)
+
+            elif state == 'waiting_remove':
+                uid = event.message.text.strip()
+                if not uid.isdigit():
+                    await event.reply("❌ Введи числовой ID.")
+                    return
+                subs = load_subs()
+                if uid in subs:
+                    del subs[uid]
+                    save_subs(subs)
+                    await event.reply(f"✅ Подписка удалена для {uid}")
+                else:
+                    await event.reply(f"❌ ID {uid} не найден")
+                # Сбрасываем состояние
+                user_states.pop(user_id, None)
 
         print("[SUB-BOT] Бот для подписок готов")
         await bot.run_until_disconnected()
