@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ПОЛНАЯ ВЕРСИЯ)
+# app.py — APEX REPORT (ПОЛНАЯ ВЕРСИЯ, ОБА БОТА РАБОТАЮТ)
 import os
 import sys
 import json
@@ -38,6 +38,7 @@ possible_sessions_dirs = [
     os.path.join(BASE_DIR, 'sessions'),
     os.path.join(BASE_DIR, 'сессии'),
     os.path.join(BASE_DIR, '..', 'sessions'),
+    os.path.join(os.path.dirname(BASE_DIR), 'sessions'),
 ]
 
 SESSIONS_DIR = None
@@ -589,7 +590,7 @@ class ContentAnalyzer:
             "count": len(messages)
         }, None
 
-# ===== ВТОРОЙ БОТ (ДЛЯ ПОДПИСОК) =====
+# ===== ВТОРОЙ БОТ (ДЛЯ ПОДПИСОК) — ИСПРАВЛЕННЫЙ =====
 async def run_subscription_bot():
     try:
         print("[SUB-BOT] Попытка запуска...")
@@ -608,69 +609,97 @@ async def run_subscription_bot():
             ]
             await event.reply("🔑 БОТ ДЛЯ ВЫДАЧИ ПОДПИСОК", buttons=buttons)
 
-        @bot.on(events.CallbackQuery(data=b"sub_list"))
-        async def sub_list(event):
+        @bot.on(events.CallbackQuery)
+        async def handle_sub_callbacks(event):
             await event.answer()
-            await event.message.delete()
-            subs = load_subs()
-            if not subs:
-                await event.reply("Нет подписчиков.")
+            data = event.data.decode('utf-8')
+            
+            if data == "sub_list":
+                subs = load_subs()
+                if not subs:
+                    await event.edit("Нет подписчиков.")
+                    return
+                text = "📋 СПИСОК ПОДПИСЧИКОВ:\n\n"
+                for uid, data in subs.items():
+                    status = "✅" if has_subscription(int(uid)) else "❌"
+                    text += f"{status} {uid} до {data.get('expiry', '—')[:10]}\n"
+                await event.edit(text, buttons=[[KeyboardButtonCallback("🔙 Назад", b"sub_back")]])
                 return
-            text = "📋 СПИСОК:\n\n"
-            for uid, data in subs.items():
-                status = "✅" if has_subscription(int(uid)) else "❌"
-                text += f"{status} {uid} до {data.get('expiry', '—')[:10]}\n"
-            await event.reply(text)
-
-        @bot.on(events.CallbackQuery(data=b"sub_requests"))
-        async def sub_requests(event):
-            await event.answer()
-            await event.message.delete()
-            reqs = load_requests()
-            if not reqs:
-                await event.reply("Нет заявок.")
+            
+            if data == "sub_requests":
+                reqs = load_requests()
+                if not reqs:
+                    await event.edit("Нет заявок.")
+                    return
+                text = "📥 ЗАЯВКИ:\n"
+                for r in reqs:
+                    text += f"🆔 {r.get('user_id')} — {r.get('time')}\n"
+                await event.edit(text, buttons=[[KeyboardButtonCallback("🔙 Назад", b"sub_back")]])
                 return
-            text = "📥 ЗАЯВКИ:\n"
-            for r in reqs:
-                text += f"🆔 {r.get('user_id')} — {r.get('time')}\n"
-            await event.reply(text)
-
-        @bot.on(events.CallbackQuery(data=b"sub_give"))
-        async def sub_give(event):
-            await event.answer()
-            await event.message.delete()
-            await event.reply("Отправь: ID дни\nПример: 123456789 7")
-
-        @bot.on(events.CallbackQuery(data=b"sub_remove"))
-        async def sub_remove(event):
-            await event.answer()
-            await event.message.delete()
-            await event.reply("Отправь ID для удаления")
+            
+            if data == "sub_give":
+                await event.edit("➕ ВЫДАТЬ ПОДПИСКУ\n\nОтправь ID и количество дней:\nПример: 123456789 7", 
+                    buttons=[[KeyboardButtonCallback("🔙 Назад", b"sub_back")]])
+                # Устанавливаем состояние
+                async def wait_for_give(event):
+                    if event.message.text.startswith('/'):
+                        return
+                    parts = event.message.text.split()
+                    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+                        await event.reply("❌ Неверный формат. Отправь: ID дни")
+                        return
+                    uid, days = parts[0], int(parts[1])
+                    subs = load_subs()
+                    expiry = datetime.now() + timedelta(days=days)
+                    subs[uid] = {'expiry': expiry.isoformat()}
+                    save_subs(subs)
+                    await event.reply(f"✅ Подписка выдана {uid} на {days} дней")
+                    await event.delete()
+                # Временный обработчик
+                @bot.on(events.NewMessage)
+                async def temp_handler(event):
+                    await wait_for_give(event)
+                return
+            
+            if data == "sub_remove":
+                await event.edit("🗑️ УДАЛИТЬ ПОДПИСКУ\n\nОтправь ID пользователя:\nПример: 123456789",
+                    buttons=[[KeyboardButtonCallback("🔙 Назад", b"sub_back")]])
+                async def wait_for_remove(event):
+                    if event.message.text.startswith('/'):
+                        return
+                    uid = event.message.text.strip()
+                    if not uid.isdigit():
+                        await event.reply("❌ Введи числовой ID.")
+                        return
+                    subs = load_subs()
+                    if uid in subs:
+                        del subs[uid]
+                        save_subs(subs)
+                        await event.reply(f"✅ Подписка удалена для {uid}")
+                    else:
+                        await event.reply(f"❌ ID {uid} не найден")
+                    await event.delete()
+                @bot.on(events.NewMessage)
+                async def temp_remove_handler(event):
+                    await wait_for_remove(event)
+                return
+            
+            if data == "sub_back":
+                buttons = [
+                    [KeyboardButtonCallback("📋 Список подписчиков", b"sub_list")],
+                    [KeyboardButtonCallback("📥 Заявки", b"sub_requests")],
+                    [KeyboardButtonCallback("➕ Выдать подписку", b"sub_give")],
+                    [KeyboardButtonCallback("🗑️ Удалить подписку", b"sub_remove")]
+                ]
+                await event.edit("🔑 БОТ ДЛЯ ВЫДАЧИ ПОДПИСОК\n\nВыбери действие:", buttons=buttons)
+                return
 
         @bot.on(events.NewMessage)
-        async def handle_sub(event):
-            if event.message.text.startswith('/'):
-                return
-            text = event.message.text.strip()
-            await event.delete()
-            parts = text.split()
-            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
-                uid, days = parts[0], int(parts[1])
-                subs = load_subs()
-                expiry = datetime.now() + timedelta(days=days)
-                subs[uid] = {'expiry': expiry.isoformat()}
-                save_subs(subs)
-                await event.reply(f"✅ Подписка выдана {uid} на {days} дней")
-            elif len(parts) == 1 and parts[0].isdigit():
-                uid = parts[0]
-                subs = load_subs()
-                if uid in subs:
-                    del subs[uid]
-                    save_subs(subs)
-                    await event.reply(f"✅ Подписка удалена для {uid}")
-                else:
-                    await event.reply(f"❌ {uid} не найден")
+        async def handle_sub_messages(event):
+            # Этот обработчик для остальных сообщений (если не попали в коллбэки)
+            pass
 
+        print("[SUB-BOT] Бот для подписок готов")
         await bot.run_until_disconnected()
     except Exception as e:
         print(f"[SUB-BOT] КРИТИЧЕСКАЯ ОШИБКА: {e}")
