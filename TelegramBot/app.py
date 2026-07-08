@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (СЕРВЕРНАЯ ВЕРСИЯ, БЕЗ GUI)
+# app.py — APEX REPORT (ПОЛНАЯ СЕРВЕРНАЯ ВЕРСИЯ, С ПРАВИЛЬНЫМИ ПУТЯМИ)
 import os
 import sys
 import json
@@ -9,8 +9,6 @@ import random
 import time
 from datetime import datetime, timedelta
 import requests
-
-# Убираем tkinter и matplotlib (они нужны только для панели)
 
 try:
     from telethon import TelegramClient, events
@@ -33,18 +31,47 @@ SUBSCRIPTION_BOT_TOKEN = '8238807176:AAFBRezNnlRiJ3oE-D81aOQGJ8NvJzBGBiU'
 DEVELOPER_LINK = 'https://t.me/cazlen'
 BOT_NAME = 'APEX REPORT'
 
+# ===== ПУТИ (С ПРОВЕРКОЙ) =====
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SESSIONS_DIR = os.path.join(BASE_DIR, 'sessions')
+
+# Пробуем разные варианты папки с сессиями
+possible_sessions_dirs = [
+    os.path.join(BASE_DIR, 'sessions'),
+    os.path.join(BASE_DIR, 'сессии'),
+    os.path.join(BASE_DIR, '..', 'sessions'),
+    os.path.join(os.path.dirname(BASE_DIR), 'sessions'),
+]
+
+SESSIONS_DIR = None
+for d in possible_sessions_dirs:
+    if os.path.exists(d):
+        SESSIONS_DIR = d
+        print(f"[INFO] Найдена папка с сессиями: {SESSIONS_DIR}")
+        break
+
+if not SESSIONS_DIR:
+    # Если папки нет — создаём
+    SESSIONS_DIR = os.path.join(BASE_DIR, 'sessions')
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    print(f"[INFO] Создана папка с сессиями: {SESSIONS_DIR}")
+
 AU_DIR = os.path.join(SESSIONS_DIR, 'au')
 US_DIR = os.path.join(SESSIONS_DIR, 'us')
 INTERNAL_DIR = os.path.join(SESSIONS_DIR, 'internal')
+
 for d in [AU_DIR, US_DIR, INTERNAL_DIR]:
     os.makedirs(d, exist_ok=True)
+
+print(f"[INFO] SESSIONS_DIR: {SESSIONS_DIR}")
+print(f"[INFO] AU_DIR: {AU_DIR}")
+print(f"[INFO] US_DIR: {US_DIR}")
+print(f"[INFO] INTERNAL_DIR: {INTERNAL_DIR}")
 
 LOG_FILE = os.path.join(BASE_DIR, 'bot_analytics.json')
 SUBS_FILE = os.path.join(BASE_DIR, 'subscriptions.json')
 REQUESTS_FILE = os.path.join(BASE_DIR, 'requests.json')
 
+# ===== РАБОТА С ДАННЫМИ =====
 def load_data():
     if os.path.exists(LOG_FILE):
         try:
@@ -203,12 +230,15 @@ async def join_chat_if_needed(client, target):
 async def send_mix_report(user_id, target, text, bot_instance):
     all_sessions = []
     for dir_path in [AU_DIR, US_DIR]:
-        for f in os.listdir(dir_path):
-            if f.endswith('.session'):
-                all_sessions.append(os.path.join(dir_path, f))
+        if os.path.exists(dir_path):
+            for f in os.listdir(dir_path):
+                if f.endswith('.session'):
+                    all_sessions.append(os.path.join(dir_path, f))
+        else:
+            print(f"[WARN] Папка не найдена: {dir_path}")
 
     if not all_sessions:
-        return "❌ No active sessions."
+        return "❌ Нет активных сессий. Проверь папку sessions/"
 
     au_success = 0
     au_total = 0
@@ -223,7 +253,7 @@ async def send_mix_report(user_id, target, text, bot_instance):
         try:
             client = await try_connect(session_path, timeout=20)
             if not client:
-                bot_instance.log(f"⚠️ Session {session_name} not authorized")
+                print(f"⚠️ Сессия {session_name} не авторизована")
                 continue
             await join_chat_if_needed(client, target)
             await client.send_message('@AUReportBot', '/start')
@@ -270,11 +300,11 @@ async def send_mix_report(user_id, target, text, bot_instance):
                     break
             await client.disconnect()
             au_success += 1
-            bot_instance.log(f"✅ Session {session_name} AU success")
+            print(f"✅ Сессия {session_name} AU успешно")
         except Exception as e:
             if client:
                 await client.disconnect()
-            bot_instance.log(f"⚠️ Error on session {session_name}: {str(e)[:50]}")
+            print(f"⚠️ Ошибка на сессии {session_name}: {str(e)[:50]}")
             continue
 
     us_sessions = [s for s in all_sessions if 'us' in s]
@@ -285,7 +315,7 @@ async def send_mix_report(user_id, target, text, bot_instance):
         try:
             client = await try_connect(session_path, timeout=20)
             if not client:
-                bot_instance.log(f"⚠️ Session {session_name} not authorized")
+                print(f"⚠️ Сессия {session_name} не авторизована")
                 continue
             await join_chat_if_needed(client, target)
             await client.send_message('@TIDABot', '/start')
@@ -332,24 +362,27 @@ async def send_mix_report(user_id, target, text, bot_instance):
                     break
             await client.disconnect()
             tida_success += 1
-            bot_instance.log(f"✅ Session {session_name} TIDA success")
+            print(f"✅ Сессия {session_name} TIDA успешно")
         except Exception as e:
             if client:
                 await client.disconnect()
-            bot_instance.log(f"⚠️ Error on session {session_name}: {str(e)[:50]}")
+            print(f"⚠️ Ошибка на сессии {session_name}: {str(e)[:50]}")
             continue
 
-    return f"✅ Mix report sent!\n🎯 Target: {target}"
+    return f"✅ Микс-жалоба отправлена!\n🎯 Цель: {target}"
 
 async def send_telethon_report(user_id, target, bot_instance):
     all_sessions = []
     for dir_path in [AU_DIR, US_DIR, INTERNAL_DIR]:
-        for f in os.listdir(dir_path):
-            if f.endswith('.session'):
-                all_sessions.append(os.path.join(dir_path, f))
+        if os.path.exists(dir_path):
+            for f in os.listdir(dir_path):
+                if f.endswith('.session'):
+                    all_sessions.append(os.path.join(dir_path, f))
+        else:
+            print(f"[WARN] Папка не найдена: {dir_path}")
 
     if not all_sessions:
-        return "❌ No active sessions!"
+        return "❌ Нет активных сессий! Проверь папку sessions/"
 
     message_link_pattern = r'https://t\.me/([^/]+)/(\d+)'
     match = re.search(message_link_pattern, target)
@@ -370,7 +403,7 @@ async def send_telethon_report(user_id, target, bot_instance):
         try:
             client = await try_connect(session_path, timeout=20)
             if not client:
-                bot_instance.log(f"⚠️ Session {session_name} not authorized")
+                print(f"⚠️ Сессия {session_name} не авторизована")
                 failed += 1
                 continue
             
@@ -392,11 +425,11 @@ async def send_telethon_report(user_id, target, bot_instance):
                 ))
             await client.disconnect()
             success += 1
-            bot_instance.log(f"✅ Telethon {session_name} success")
+            print(f"✅ Telethon {session_name} успешно")
         except FloodWaitError as e:
             if client:
                 await client.disconnect()
-            bot_instance.log(f"⏳ FloodWait on {session_name}: {e.seconds} sec")
+            print(f"⏳ FloodWait на {session_name}: {e.seconds} сек")
             await asyncio.sleep(min(e.seconds, 30))
             failed += 1
             continue
@@ -405,13 +438,13 @@ async def send_telethon_report(user_id, target, bot_instance):
                 await client.disconnect()
             error_msg = str(e)
             if "username" in error_msg.lower():
-                bot_instance.log(f"⚠️ {session_name}: username not found")
+                print(f"⚠️ {session_name}: юзернейм не найден")
             else:
-                bot_instance.log(f"⚠️ {session_name}: {error_msg[:50]}")
+                print(f"⚠️ {session_name}: {error_msg[:50]}")
             failed += 1
             continue
 
-    return f"✅ Telethon — done ({success}/{total})"
+    return f"✅ Telethon — готово ({success}/{total})"
 
 async def send_operator_report(user_id, username, bot_instance):
     phone = generate_phone()
@@ -419,9 +452,9 @@ async def send_operator_report(user_id, username, bot_instance):
     text = f"Complaint against drug shop operator: {username}"
     success, msg = send_web_report(RUCAPTCHA_API_KEY, name, phone, text)
     if success:
-        return f"✅ Operator {username} — report sent"
+        return f"✅ Оператор {username} — жалоба отправлена"
     else:
-        return f"❌ Operator {username} — error: {msg}"
+        return f"❌ Оператор {username} — ошибка: {msg}"
 
 class PowerAI:
     def generate_mix_text(self, target, target_type, violation_desc, evidence_links=""):
@@ -465,11 +498,16 @@ class ContentAnalyzer:
     async def analyze_target(self, target, bot_instance):
         all_sessions = []
         for dir_path in [AU_DIR, US_DIR, INTERNAL_DIR]:
-            for f in os.listdir(dir_path):
-                if f.endswith('.session'):
-                    all_sessions.append(os.path.join(dir_path, f))
+            if os.path.exists(dir_path):
+                for f in os.listdir(dir_path):
+                    if f.endswith('.session'):
+                        all_sessions.append(os.path.join(dir_path, f))
+            else:
+                print(f"[WARN] Папка не найдена: {dir_path}")
+
         if not all_sessions:
-            return None, "No active sessions"
+            return None, "Нет активных сессий"
+
         messages = []
         target_type = "unknown"
         client = None
@@ -483,7 +521,7 @@ class ContentAnalyzer:
                 continue
 
         if not client:
-            return None, "Failed to connect to any session"
+            return None, "Не удалось подключиться ни к одной сессии"
 
         try:
             if 't.me/' in target:
@@ -491,26 +529,26 @@ class ContentAnalyzer:
                 if '/' in username:
                     username = username.split('/')[0]
                 entity = await client.get_entity(f"@{username}")
-                target_type = "channel"
+                target_type = "канал"
             elif target.startswith('@'):
                 entity = await client.get_entity(target)
                 if entity.bot:
-                    target_type = "bot"
+                    target_type = "бот"
                     await client.send_message(entity, '/start')
                     await asyncio.sleep(2)
                 else:
-                    target_type = "user"
+                    target_type = "пользователь"
             else:
-                return None, "Invalid link"
+                return None, "Неверная ссылка"
 
             try:
                 await client(JoinChannelRequest(entity))
-                bot_instance.log(f"✅ Join request sent to {target}")
+                print(f"✅ Отправлена заявка на вступление в {target}")
                 await asyncio.sleep(10)
             except:
                 pass
 
-            bot_instance.log(f"📥 Collecting all messages from {target}...")
+            print(f"📥 Сбор всех сообщений из {target}...")
             all_messages = []
             offset_id = 0
             limit = 100
@@ -524,11 +562,11 @@ class ContentAnalyzer:
                         if m and m.text:
                             all_messages.append(m.text)
                     offset_id = msgs[-1].id
-                    bot_instance.log(f"📥 Collected {len(all_messages)} messages...")
+                    print(f"📥 Собрано {len(all_messages)} сообщений...")
                     if len(msgs) < limit:
                         break
                 except Exception as e:
-                    bot_instance.log(f"⚠️ Error collecting messages: {e}")
+                    print(f"⚠️ Ошибка при сборе сообщений: {e}")
                     break
 
             await client.disconnect()
@@ -537,10 +575,10 @@ class ContentAnalyzer:
         except Exception as e:
             if client:
                 await client.disconnect()
-            return None, f"Analysis error: {e}"
+            return None, f"Ошибка при анализе: {e}"
 
         if not messages:
-            return None, "Failed to get messages"
+            return None, "Не удалось получить сообщения"
 
         results = self.analyze_messages(messages)
         violation, percent = self.get_violation(results)
@@ -558,18 +596,18 @@ async def run_subscription_bot():
     try:
         bot = TelegramClient('subscription_bot', API_ID, API_HASH)
         await bot.start(bot_token=SUBSCRIPTION_BOT_TOKEN)
-        print("[SUB-BOT] Subscription bot started")
+        print("[SUB-BOT] Бот для подписок запущен")
 
         @bot.on(events.NewMessage(pattern='/start'))
         async def start_handler(event):
             await event.delete()
             buttons = [
-                [KeyboardButtonCallback("📋 Subscribers", b"sub_list")],
-                [KeyboardButtonCallback("📥 Requests", b"sub_requests")],
-                [KeyboardButtonCallback("➕ Give subscription", b"sub_give")],
-                [KeyboardButtonCallback("🗑️ Remove", b"sub_remove")]
+                [KeyboardButtonCallback("📋 Список подписчиков", b"sub_list")],
+                [KeyboardButtonCallback("📥 Заявки", b"sub_requests")],
+                [KeyboardButtonCallback("➕ Выдать подписку", b"sub_give")],
+                [KeyboardButtonCallback("🗑️ Удалить подписку", b"sub_remove")]
             ]
-            await event.reply("🔑 SUBSCRIPTION BOT", buttons=buttons)
+            await event.reply("🔑 БОТ ДЛЯ ВЫДАЧИ ПОДПИСОК", buttons=buttons)
 
         @bot.on(events.CallbackQuery(data=b"sub_list"))
         async def sub_list(event):
@@ -577,12 +615,12 @@ async def run_subscription_bot():
             await event.message.delete()
             subs = load_subs()
             if not subs:
-                await event.reply("No subscribers.")
+                await event.reply("Нет подписчиков.")
                 return
-            text = "📋 LIST:\n\n"
+            text = "📋 СПИСОК:\n\n"
             for uid, data in subs.items():
                 status = "✅" if has_subscription(int(uid)) else "❌"
-                text += f"{status} {uid} until {data.get('expiry', '—')[:10]}\n"
+                text += f"{status} {uid} до {data.get('expiry', '—')[:10]}\n"
             await event.reply(text)
 
         @bot.on(events.CallbackQuery(data=b"sub_requests"))
@@ -591,9 +629,9 @@ async def run_subscription_bot():
             await event.message.delete()
             reqs = load_requests()
             if not reqs:
-                await event.reply("No requests.")
+                await event.reply("Нет заявок.")
                 return
-            text = "📥 REQUESTS:\n"
+            text = "📥 ЗАЯВКИ:\n"
             for r in reqs:
                 text += f"🆔 {r.get('user_id')} — {r.get('time')}\n"
             await event.reply(text)
@@ -602,13 +640,13 @@ async def run_subscription_bot():
         async def sub_give(event):
             await event.answer()
             await event.message.delete()
-            await event.reply("Send: ID days\nExample: 123456789 7")
+            await event.reply("Отправь: ID дни\nПример: 123456789 7")
 
         @bot.on(events.CallbackQuery(data=b"sub_remove"))
         async def sub_remove(event):
             await event.answer()
             await event.message.delete()
-            await event.reply("Send ID to remove")
+            await event.reply("Отправь ID для удаления")
 
         @bot.on(events.NewMessage)
         async def handle_sub(event):
@@ -623,22 +661,22 @@ async def run_subscription_bot():
                 expiry = datetime.now() + timedelta(days=days)
                 subs[uid] = {'expiry': expiry.isoformat()}
                 save_subs(subs)
-                await event.reply(f"✅ Subscription given to {uid} for {days} days")
+                await event.reply(f"✅ Подписка выдана {uid} на {days} дней")
             elif len(parts) == 1 and parts[0].isdigit():
                 uid = parts[0]
                 subs = load_subs()
                 if uid in subs:
                     del subs[uid]
                     save_subs(subs)
-                    await event.reply(f"✅ Subscription removed for {uid}")
+                    await event.reply(f"✅ Подписка удалена для {uid}")
                 else:
-                    await event.reply(f"❌ {uid} not found")
+                    await event.reply(f"❌ {uid} не найден")
 
         await bot.run_until_disconnected()
     except Exception as e:
-        print(f"[SUB-BOT] Error: {e}")
+        print(f"[SUB-BOT] Ошибка: {e}")
 
-# ===== ГЛАВНЫЙ БОТ (БЕЗ GUI) =====
+# ===== ГЛАВНЫЙ БОТ =====
 async def main_bot():
     try:
         bot = await TelegramClient('bot_session', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
@@ -664,21 +702,21 @@ async def main_bot():
             nonlocal active_message
             await event.delete()
             user_id = event.sender_id
-            if user_id not in load_data().get('users', []):
-                data = load_data()
+            data = load_data()
+            if user_id not in data.get('users', []):
                 data.setdefault('users', []).append(user_id)
                 save_data(data)
             
             if has_subscription(user_id):
                 buttons = [
-                    [KeyboardButtonCallback("📋 Menu", b"main_menu")],
-                    [KeyboardButtonCallback("👤 Profile", b"profile"), KeyboardButtonCallback("👨‍💻 Developer", b"developer")],
-                    [KeyboardButtonCallback("📜 My History", b"history")]
+                    [KeyboardButtonCallback("📋 Меню", b"main_menu")],
+                    [KeyboardButtonCallback("👤 Профиль", b"profile"), KeyboardButtonCallback("👨‍💻 Разработчик", b"developer")],
+                    [KeyboardButtonCallback("📜 Моя история", b"history")]
                 ]
-                text = f"📌 {BOT_NAME}\n\nSelect section:"
+                text = f"📌 {BOT_NAME}\n\nВыбери раздел:"
                 active_message = await event.reply(text, buttons=buttons)
             else:
-                text = f"🚫 ACCESS DENIED\n\nTo purchase a subscription, contact the developer:\n{DEVELOPER_LINK}"
+                text = f"🚫 ДОСТУП ЗАПРЕЩЁН\n\nДля покупки подписки напишите разработчику:\n{DEVELOPER_LINK}"
                 active_message = await event.reply(text)
 
         @bot.on(events.CallbackQuery)
@@ -705,97 +743,97 @@ async def main_bot():
 
             if data == "main_menu":
                 if not has_subscription(user_id):
-                    await upd(f"🔒 ACCESS RESTRICTED\n\nTo purchase access contact developer:\n{DEVELOPER_LINK}", [[KeyboardButtonCallback("🔙 Back", b"back_to_start")]])
+                    await upd(f"🔒 ДОСТУП ОГРАНИЧЕН\n\nДля покупки доступа напишите разработчику:\n{DEVELOPER_LINK}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
                 buttons = [
-                    [KeyboardButtonCallback("📤 Send Mix", b"mix_menu")],
+                    [KeyboardButtonCallback("📤 Отправка микс", b"mix_menu")],
                     [KeyboardButtonCallback("⚡ Telethon", b"telethon_report")],
-                    [KeyboardButtonCallback("🔍 AI Analysis", b"ai_analyze")],
-                    [KeyboardButtonCallback("👤 Operator", b"operator")],
-                    [KeyboardButtonCallback("🔙 Back", b"back_to_start")]
+                    [KeyboardButtonCallback("🔍 AI Анализ", b"ai_analyze")],
+                    [KeyboardButtonCallback("👤 Оператор", b"operator")],
+                    [KeyboardButtonCallback("🔙 Назад", b"back_to_start")]
                 ]
-                await upd("📋 MAIN MENU\n\nSelect function:", buttons)
+                await upd("📋 ГЛАВНОЕ МЕНЮ\n\nВыбери функцию:", buttons)
                 return
             
             if data == "profile":
                 user_entity = await event.client.get_entity(user_id)
-                username = f"@{user_entity.username}" if user_entity.username else "Not set"
+                username = f"@{user_entity.username}" if user_entity.username else "Не указан"
                 user_reports = [r for r in load_data().get('reports', []) if r.get('user') == user_id]
-                status = "⭐ Premium" if has_subscription(user_id) else "🏠 User"
-                await upd(f"👤 PROFILE\n\n🆔 ID: {user_id}\n👤 Username: {username}\n📊 Status: {status}\n📩 Requests: {len(user_reports)}", [[KeyboardButtonCallback("🔙 Back", b"back_to_start")]])
+                status = "⭐ Премиум" if has_subscription(user_id) else "🏠 Пользователь"
+                await upd(f"👤 ПРОФИЛЬ\n\n🆔 ID: {user_id}\n👤 Юзернейм: {username}\n📊 Статус: {status}\n📩 Запросов: {len(user_reports)}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                 return
             
             if data == "developer":
-                await upd(f"👨‍💻 DEVELOPER\n\nFor all questions contact:\n{DEVELOPER_LINK}", [[KeyboardButtonCallback("🔙 Back", b"back_to_start")]])
+                await upd(f"👨‍💻 РАЗРАБОТЧИК\n\nПо всем вопросам обращаться:\n{DEVELOPER_LINK}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                 return
             
             if data == "history":
                 history = [r for r in load_data().get('reports', []) if r.get('user') == user_id]
                 if not history:
-                    await upd("📜 MY HISTORY\n\nNo records.", [[KeyboardButtonCallback("🔙 Back", b"back_to_start")]])
+                    await upd("📜 МОЯ ИСТОРИЯ\n\nНет записей.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
-                text = "📜 MY HISTORY\n\n"
+                text = "📜 МОЯ ИСТОРИЯ\n\n"
                 for i, r in enumerate(history[-10:], 1):
-                    status = "✅ sent" if "успешно" in r.get('type', '').lower() else "⏳ pending"
+                    status = "✅ отправлено" if "успешно" in r.get('type', '').lower() else "⏳ ожидание"
                     text += f"{i}. {r.get('target', '')} - {status} · {r.get('time', '')}\n"
-                buttons = [[KeyboardButtonCallback("📥 Download PDF", b"download_pdf")], [KeyboardButtonCallback("🔙 Back", b"back_to_start")]]
+                buttons = [[KeyboardButtonCallback("📥 Скачать PDF", b"download_pdf")], [KeyboardButtonCallback("🔙 Назад", b"back_to_start")]]
                 await upd(text, buttons)
                 return
             
             if data == "download_pdf":
-                await upd("📥 PDF file with history generated and sent to personal messages.", [[KeyboardButtonCallback("🔙 Back", b"back_to_start")]])
+                await upd("📥 PDF-файл с историей сгенерирован и отправлен в личные сообщения.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                 return
             
             if data == "back_to_start":
                 if has_subscription(user_id):
-                    buttons = [[KeyboardButtonCallback("📋 Menu", b"main_menu")], [KeyboardButtonCallback("👤 Profile", b"profile"), KeyboardButtonCallback("👨‍💻 Developer", b"developer")], [KeyboardButtonCallback("📜 My History", b"history")]]
-                    await upd(f"📌 {BOT_NAME}\n\nSelect section:", buttons)
+                    buttons = [[KeyboardButtonCallback("📋 Меню", b"main_menu")], [KeyboardButtonCallback("👤 Профиль", b"profile"), KeyboardButtonCallback("👨‍💻 Разработчик", b"developer")], [KeyboardButtonCallback("📜 Моя история", b"history")]]
+                    await upd(f"📌 {BOT_NAME}\n\nВыбери раздел:", buttons)
                 else:
-                    await upd(f"🚫 ACCESS DENIED\n\nTo purchase a subscription, contact the developer:\n{DEVELOPER_LINK}", None)
+                    await upd(f"🚫 ДОСТУП ЗАПРЕЩЁН\n\nДля покупки подписки напишите разработчику:\n{DEVELOPER_LINK}", None)
                 return
             
             if data == "mix_menu":
                 if not has_subscription(user_id):
-                    await upd("🔒 No subscription.", [[KeyboardButtonCallback("🔙 Back", b"back_to_start")]])
+                    await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
                 user_states[user_id] = 'waiting_mix_target'
-                await upd("📤 SEND MIX\n\nSend target link\n@username or https://t.me/...", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                await upd("📤 ОТПРАВКА МИКС\n\nОтправьте ссылку на цель\n@username или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
             
             if data == "telethon_report":
                 if not has_subscription(user_id):
-                    await upd("🔒 No subscription.", [[KeyboardButtonCallback("🔙 Back", b"back_to_start")]])
+                    await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
                 user_states[user_id] = 'waiting_telethon_target'
-                await upd("⚡ TELEHON\n\nSend target — bot or message link.", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                await upd("⚡ TELEHON\n\nОтправьте цель — бот или ссылка на сообщение.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
             
             if data == "operator":
                 if not has_subscription(user_id):
-                    await upd("🔒 No subscription.", [[KeyboardButtonCallback("🔙 Back", b"back_to_start")]])
+                    await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
                 user_states[user_id] = 'waiting_operator_target'
-                await upd("👤 OPERATOR\n\nSend operator username:\n@username or https://t.me/username", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                await upd("👤 ОПЕРАТОР\n\nОтправьте юзернейм оператора:\n@username или https://t.me/username", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
             
             if data == "ai_analyze":
                 if not has_subscription(user_id):
-                    await upd("🔒 No subscription.", [[KeyboardButtonCallback("🔙 Back", b"back_to_start")]])
+                    await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
                 user_states[user_id] = 'waiting_ai_target'
-                await upd("🔍 AI ANALYSIS\n\nSend channel/group link:\n@channel or https://t.me/+invite_link", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                await upd("🔍 AI АНАЛИЗ\n\nОтправьте ссылку на канал/группу:\n@channel или https://t.me/+invite_link", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
             
             if data == "mix_drugs_yes":
                 user_data[user_id]['drugs'] = 'yes'
                 user_states[user_id] = 'waiting_mix_description'
-                await upd("Describe the violation\n\nSpecify:\n1. Target type — Channel / Bot / Account / Group\n2. Reason — what exactly violates\n3. Evidence links\n\nExample: Channel; selling prohibited goods;\nhttps://t.me/x/12", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                await upd("Опишите нарушение\n\nУкажите через :\n1. Тип цели — Канал / Бот / Аккаунт / Группа\n2. Причина — что именно нарушает\n3. Ссылки на нарушения\n\nПример: Канал; продажа запрещёнки;\nhttps://t.me/x/12", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
             
             if data == "mix_drugs_no":
                 user_data[user_id]['drugs'] = 'no'
                 user_states[user_id] = 'waiting_mix_description'
-                await upd("Describe the violation\n\nSpecify:\n1. Target type — Channel / Bot / Account / Group\n2. Reason — what exactly violates\n3. Evidence links\n\nExample: Channel; selling prohibited goods;\nhttps://t.me/x/12", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                await upd("Опишите нарушение\n\nУкажите через :\n1. Тип цели — Канал / Бот / Аккаунт / Группа\n2. Причина — что именно нарушает\n3. Ссылки на нарушения\n\nПример: Канал; продажа запрещёнки;\nhttps://t.me/x/12", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
         @bot.on(events.NewMessage)
@@ -823,78 +861,78 @@ async def main_bot():
                     target = text
                     user_data[user_id] = {'target': target}
                     user_states[user_id] = 'waiting_mix_drugs'
-                    buttons = [[KeyboardButtonCallback("✅ Yes", b"mix_drugs_yes")], [KeyboardButtonCallback("❌ No", b"mix_drugs_no")], [KeyboardButtonCallback("🔙 Back", b"main_menu")]]
-                    await upd("Related to drugs?", buttons)
+                    buttons = [[KeyboardButtonCallback("✅ Да", b"mix_drugs_yes")], [KeyboardButtonCallback("❌ Нет", b"mix_drugs_no")], [KeyboardButtonCallback("🔙 Назад", b"main_menu")]]
+                    await upd("Относится к наркотикам?", buttons)
                 else:
-                    await upd("❌ Invalid link.", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                    await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_telethon_target':
                 if 't.me/' in text or text.startswith('@'):
                     target = text
                     user_states.pop(user_id, None)
-                    await event.reply("⏳ Sending Telethon...")
+                    await event.reply("⏳ Отправка Telethon...")
                     result = await send_telethon_report(user_id, target, None)
                     data = load_data()
                     data.setdefault('reports', []).append({
                         'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'target': target,
-                        'type': 'Telethon Report',
-                        'destination': 'All sessions',
+                        'type': 'Telethon-отчёт',
+                        'destination': 'Все сессии',
                         'user': user_id
                     })
                     save_data(data)
-                    await upd(result, [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                    await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
-                    await upd("❌ Invalid link.", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                    await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_operator_target':
                 if 't.me/' in text or text.startswith('@'):
                     username = text
                     user_states.pop(user_id, None)
-                    await event.reply("⏳ Sending operator complaint...")
+                    await event.reply("⏳ Отправка жалобы на оператора...")
                     result = await send_operator_report(user_id, username, None)
                     data = load_data()
                     data.setdefault('reports', []).append({
                         'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'target': username,
-                        'type': 'Operator',
-                        'destination': 'Web method',
+                        'type': 'Оператор',
+                        'destination': 'Веб-метод',
                         'user': user_id
                     })
                     save_data(data)
-                    await upd(result, [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                    await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
-                    await upd("❌ Invalid username.", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                    await upd("❌ Неверный юзернейм.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_ai_target':
                 if 't.me/' in text or text.startswith('@'):
                     target = text
                     user_states.pop(user_id, None)
-                    await upd("⏳ Scanning...\nLoading all messages...", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                    await upd("⏳ Сканирование...\nЗагрузка всех сообщений...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                     analyzer = ContentAnalyzer()
                     result, error = await analyzer.analyze_target(target, None)
                     if error:
-                        await upd(f"❌ {error}", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                        await upd(f"❌ {error}", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                         return
                     if not result:
-                        await upd("❌ Failed to get messages", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                        await upd("❌ Не удалось получить сообщения", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                         return
                     results = result["results"]
                     violation = result["violation"]
                     percent = result["percent"]
                     messages = result["messages"]
                     target_type = result["target_type"]
-                    report = f"🔍 AI ANALYSIS: {target}\n📌 Type: {target_type.upper()}\n📝 Scanned: {len(messages)} messages\n"
+                    report = f"🔍 AI АНАЛИЗ: {target}\n📌 Тип: {target_type.upper()}\n📝 Просканировано: {len(messages)} сообщений\n"
                     if violation:
-                        report += f"🔴 Violations: 1\n⚠️ Detected: {violation.upper()} ({percent}%)\n\n❌ Violation found!"
+                        report += f"🔴 Нарушений: 1\n⚠️ Обнаружено: {violation.upper()} ({percent}%)\n\n❌ Нарушение найдено!"
                     else:
-                        report += f"🔴 Violations: 0\n\n✅ No serious violations found."
-                    await upd(report, [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                        report += f"🔴 Нарушений: 0\n\n✅ Серьёзных нарушений не найдено."
+                    await upd(report, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
-                    await upd("❌ Invalid link.", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                    await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_mix_description':
@@ -902,27 +940,27 @@ async def main_bot():
                 target = user_data.get(user_id, {}).get('target')
                 drugs = user_data.get(user_id, {}).get('drugs', 'no')
                 if not target:
-                    await upd("❌ Error, restart /start", [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                    await upd("❌ Ошибка, начните заново /start", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                     return
-                violation_desc = "distribution of illegal narcotics and prohibited substances" if drugs == 'yes' else "violation of Telegram Terms of Service and community guidelines"
+                violation_desc = "распространение запрещённых наркотических веществ" if drugs == 'yes' else "нарушение правил Telegram и сообщественных норм"
                 parts = description.split(';')
-                target_type = parts[0].strip() if len(parts) > 0 else "unknown"
+                target_type = parts[0].strip() if len(parts) > 0 else "неизвестно"
                 evidence_links = parts[2].strip() if len(parts) > 2 else ""
                 ai = PowerAI()
                 text = ai.generate_mix_text(target, target_type, violation_desc, evidence_links)
                 user_states.pop(user_id, None)
-                await event.reply("⏳ Sending mix report...")
+                await event.reply("⏳ Отправка микс-жалобы...")
                 result = await send_mix_report(user_id, target, text, None)
                 data = load_data()
                 data.setdefault('reports', []).append({
                     'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     'target': target,
-                    'type': 'Mix Report',
+                    'type': 'Микс-жалоба',
                     'destination': 'AU + TIDA',
                     'user': user_id
                 })
                 save_data(data)
-                await upd(result, [[KeyboardButtonCallback("🔙 Back", b"main_menu")]])
+                await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
         @bot.on(events.NewMessage(pattern='/cancel'))
@@ -932,10 +970,10 @@ async def main_bot():
             user_states.pop(event.sender_id, None)
             user_data.pop(event.sender_id, None)
             if has_subscription(event.sender_id):
-                buttons = [[KeyboardButtonCallback("📋 Menu", b"main_menu")], [KeyboardButtonCallback("👤 Profile", b"profile"), KeyboardButtonCallback("👨‍💻 Developer", b"developer")], [KeyboardButtonCallback("📜 My History", b"history")]]
-                text = f"📌 {BOT_NAME}\n\n❌ Cancelled.\n\nSelect section:"
+                buttons = [[KeyboardButtonCallback("📋 Меню", b"main_menu")], [KeyboardButtonCallback("👤 Профиль", b"profile"), KeyboardButtonCallback("👨‍💻 Разработчик", b"developer")], [KeyboardButtonCallback("📜 Моя история", b"history")]]
+                text = f"📌 {BOT_NAME}\n\n❌ Отменено.\n\nВыбери раздел:"
             else:
-                text = f"🚫 ACCESS DENIED\n\nTo purchase a subscription, contact the developer:\n{DEVELOPER_LINK}"
+                text = f"🚫 ДОСТУП ЗАПРЕЩЁН\n\nДля покупки подписки напишите разработчику:\n{DEVELOPER_LINK}"
                 buttons = None
             if active_message:
                 await active_message.edit(text, buttons=buttons)
