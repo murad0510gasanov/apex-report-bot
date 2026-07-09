@@ -32,8 +32,9 @@ SUBSCRIPTION_BOT_TOKEN = '8238807176:AAFBRezNnlRiJ3oE-D81aOQGJ8NvJzBGBiU'
 DEVELOPER_LINK = 'https://t.me/cazlen'
 BOT_NAME = 'APEX REPORT'
 
-# ===== АДМИНЫ =====
-ADMIN_IDS = [5094777080, 123456789]  # ЗАМЕНИ НА СВОЙ ID
+# ===== АДМИНЫ (ТОЛЬКО ТЫ) =====
+# ЗАМЕНИ 123456789 НА СВОЙ TELEGRAM ID
+ADMIN_IDS = [123456789]  # ← СЮДА СВОЙ ID
 
 # ===== ПУТИ =====
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -250,20 +251,22 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
                 all_sessions.append(os.path.join(US_DIR, f))
 
     if not all_sessions:
+        if edit_callback:
+            await edit_callback("❌ Нет сессий для микса")
         return "❌ Нет сессий"
 
-    au_success = 0
-    au_total = 0
-    tida_success = 0
-    tida_total = 0
-
+    total = len(all_sessions)
     au_sessions = [s for s in all_sessions if 'au' in s]
+    us_sessions = [s for s in all_sessions if 'us' in s]
     au_total = len(au_sessions)
-    
+    us_total = len(us_sessions)
+    current = 0
+
     # AU сессии
-    for i, session_path in enumerate(au_sessions):
+    for session_path in au_sessions:
+        current += 1
         if edit_callback:
-            await edit_callback(f"⏳ Отправка микс-жалобы... ({i+1}/{au_total+tida_total})")
+            await edit_callback(f"⏳ Отправка микс-жалобы... ({current}/{total})")
         session_name = os.path.basename(session_path)
         client = None
         try:
@@ -313,7 +316,6 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
                             continue
                         break
                     break
-            au_success += 1
         except Exception as e:
             print(f"[AU] {session_name} ошибка: {e}")
         finally:
@@ -321,11 +323,10 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
                 await client.disconnect()
 
     # US сессии
-    us_sessions = [s for s in all_sessions if 'us' in s]
-    tida_total = len(us_sessions)
-    for i, session_path in enumerate(us_sessions):
+    for session_path in us_sessions:
+        current += 1
         if edit_callback:
-            await edit_callback(f"⏳ Отправка микс-жалобы... ({au_total+i+1}/{au_total+tida_total})")
+            await edit_callback(f"⏳ Отправка микс-жалобы... ({current}/{total})")
         session_name = os.path.basename(session_path)
         client = None
         try:
@@ -375,14 +376,15 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
                             continue
                         break
                     break
-            tida_success += 1
         except Exception as e:
             print(f"[US] {session_name} ошибка: {e}")
         finally:
             if client:
                 await client.disconnect()
 
-    return f"✅ Микс-жалоба отправлена!"
+    if edit_callback:
+        await edit_callback("✅ Микс-жалоба отправлена!")
+    return "✅ Микс-жалоба отправлена!"
 
 async def send_telethon_report(user_id, target, edit_callback=None):
     """Отправляет Telethon-репорт через все сессии, возвращает только статус и количество ошибок"""
@@ -891,6 +893,18 @@ async def main_bot():
                 user_states[user_id] = 'waiting_ai_target'
                 await upd("🔍 AI-АНАЛИЗ\n\nОтправь ссылку\n@channel или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+            
+            if data == "mix_drugs_yes":
+                user_data[user_id]['drugs'] = 'yes'
+                user_states[user_id] = 'waiting_mix_description'
+                await upd("📝 ОПИСАНИЕ\n\nТип; Причина; Ссылки\nПример: Канал; продажа; https://t.me/x/12", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                return
+            
+            if data == "mix_drugs_no":
+                user_data[user_id]['drugs'] = 'no'
+                user_states[user_id] = 'waiting_mix_description'
+                await upd("📝 ОПИСАНИЕ\n\nТип; Причина; Ссылки\nПример: Канал; продажа; https://t.me/x/12", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                return
 
         @bot.on(events.NewMessage)
         async def handle_messages(event):
@@ -925,7 +939,6 @@ async def main_bot():
                     user_states.pop(user_id, None)
                     await upd("⏳ Отправка Telethon...")
                     
-                    # Определяем функцию для обновления сообщения
                     async def edit_callback(new_text):
                         await upd(new_text)
                     
@@ -941,7 +954,6 @@ async def main_bot():
                     })
                     save_data(data)
                     
-                    # Добавляем кнопку "Назад"
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1004,10 +1016,6 @@ async def main_bot():
                     await upd(report, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                return
-
-            if state == 'waiting_mix_drugs':
-                # Обработка через callback уже сделана, этот блок не нужен
                 return
 
             if state == 'waiting_mix_description':
