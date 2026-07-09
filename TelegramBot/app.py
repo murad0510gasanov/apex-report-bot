@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ БЕЗ GEMINI)
+# app.py — APEX REPORT (ФИНАЛ)
 import os
 import sys
 import json
@@ -122,13 +122,13 @@ async def solve_captcha(api_key):
     try:
         async with aiohttp.ClientSession() as session:
             session.headers.update({'User-Agent': 'Mozilla/5.0'})
-            async with session.get("https://telegram.org/support", timeout=15) as resp:
+            async with session.get("https://telegram.org/support", timeout=10) as resp:
                 html = await resp.text()
                 match = re.search(r'data-sitekey=["\']([^"\']+)["\']', html)
                 if not match:
                     return None, None
                 sitekey = match.group(1)
-            
+
             data = {
                 "key": api_key,
                 "method": "turnstile",
@@ -136,13 +136,13 @@ async def solve_captcha(api_key):
                 "pageurl": "https://telegram.org/support",
                 "json": 1
             }
-            async with session.post("http://rucaptcha.com/in.php", data=data, timeout=30) as resp:
+            async with session.post("http://rucaptcha.com/in.php", data=data, timeout=15) as resp:
                 res = await resp.json()
                 if res.get("status") != 1:
                     return None, None
                 captcha_id = res.get("request")
-            
-            for _ in range(60):
+
+            for _ in range(5):
                 await asyncio.sleep(2)
                 async with session.get(f"http://rucaptcha.com/res.php?key={api_key}&action=get&id={captcha_id}&json=1") as resp:
                     data = await resp.json()
@@ -226,6 +226,26 @@ async def get_live_session():
         if client:
             return client
     return None
+
+# ===== ОПЕРАТОР (С КАПЧЕЙ) =====
+async def send_operator_report(user_id, username, edit_callback=None):
+    phone = generate_phone()
+    name = "Operator Report"
+    text = f"Complaint against drug shop operator: {username}"
+    success, msg = await send_web_report(RUCAPTCHA_API_KEY, name, phone, text)
+    if success:
+        result = f"✅ Оператор {username} — жалоба отправлена"
+        try:
+            async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
+                channel = await temp_client.get_entity(CHANNEL_ID)
+                await temp_client.send_message(channel, f"✅ Оператор {username} — жалоба отправлена")
+        except:
+            pass
+    else:
+        result = f"❌ Оператор {username}: {msg}"
+    if edit_callback:
+        await edit_callback(result)
+    return result
 
 # ===== ОТПРАВКА TELEHON (ВСЕ СЕССИИ) =====
 async def send_telethon_report(user_id, target, edit_callback=None):
@@ -474,26 +494,6 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         await edit_callback("✅ Микс-жалоба отправлена!")
     return "✅ Микс-жалоба отправлена!"
 
-# ===== ОПЕРАТОР =====
-async def send_operator_report(user_id, username, edit_callback=None):
-    phone = generate_phone()
-    name = "Operator Report"
-    text = f"Complaint against drug shop operator: {username}"
-    success, msg = await send_web_report(RUCAPTCHA_API_KEY, name, phone, text)
-    if success:
-        result = f"✅ Оператор {username}"
-        try:
-            async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
-                channel = await temp_client.get_entity(CHANNEL_ID)
-                await temp_client.send_message(channel, f"✅ Оператор {username} — жалоба отправлена")
-        except:
-            pass
-    else:
-        result = f"❌ Оператор {username}: {msg}"
-    if edit_callback:
-        await edit_callback(result)
-    return result
-
 # ===== КЛАСС ДЛЯ ГЕНЕРАЦИИ ТЕКСТА МИКСА =====
 class PowerAI:
     def generate_mix_text(self, target, target_type, violation_desc, evidence_links=""):
@@ -508,7 +508,7 @@ class PowerAI:
         report += " Signed, Telegram Compliance Reporting System."
         return report
 
-# ===== МОЩНЫЙ АНАЛИЗАТОР (БЕЗ GEMINI) =====
+# ===== AI-АНАЛИЗАТОР =====
 class ContentAnalyzer:
     def __init__(self):
         self.keywords = {
@@ -546,7 +546,7 @@ class ContentAnalyzer:
                 "harassment", "insult"
             ]
         }
-        
+
         self.patterns = {
             "phone": r'(\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}',
             "email": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
@@ -564,7 +564,7 @@ class ContentAnalyzer:
                 if word in text_lower:
                     count += 1
             results[category] = min(count * 25, 100)
-        
+
         for pattern_name, pattern in self.patterns.items():
             matches = re.findall(pattern, text, re.IGNORECASE)
             if matches:
@@ -601,29 +601,20 @@ class ContentAnalyzer:
             elif target.startswith('@'):
                 entity = await client.get_entity(target)
                 target_type = "бот" if entity.bot else "пользователь"
-                if entity.bot:
-                    await client.send_message(entity, '/start')
-                    await asyncio.sleep(2)
             else:
                 await client.disconnect()
                 return None, "Неверная ссылка"
 
             try:
                 await client(JoinChannelRequest(entity))
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
             except:
                 pass
 
-            offset_id = 0
-            for _ in range(2):
-                msgs = await client.get_messages(entity, limit=100, offset_id=offset_id)
-                if not msgs:
-                    break
-                for m in msgs:
-                    if m and m.text:
-                        messages.append(m.text)
-                offset_id = msgs[-1].id
-                await asyncio.sleep(1)
+            msgs = await client.get_messages(entity, limit=50)
+            for m in msgs:
+                if m and m.text:
+                    messages.append(m.text)
 
         except Exception as e:
             await client.disconnect()
@@ -650,7 +641,7 @@ class ContentAnalyzer:
             try:
                 async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
                     channel = await temp_client.get_entity(CHANNEL_ID)
-                    await temp_client.send_message(channel, 
+                    await temp_client.send_message(channel,
                         f"🔍 AI Анализ: {target}\n"
                         f"Тип: {target_type.upper()}\n"
                         f"⚠️ Нарушение: {violation.upper()} ({percent}%)\n"
@@ -720,7 +711,7 @@ async def run_subscription_bot():
 
             if data == "sub_give":
                 user_states[user_id] = 'waiting_give'
-                await event.edit("➕ ВЫДАТЬ\n\nОтправь: ID дни\nПример: 123456789 7", 
+                await event.edit("➕ ВЫДАТЬ\n\nОтправь: ID дни\nПример: 123456789 7",
                     buttons=[[KeyboardButtonCallback("🔙 Отмена", b"sub_back")]])
                 return
 
