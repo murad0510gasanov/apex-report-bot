@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timedelta
 import aiohttp
 import requests
+from aiohttp import web
 
 try:
     from telethon import TelegramClient, events, errors
@@ -228,7 +229,7 @@ async def join_chat_if_needed(client, target):
         return False
 
 def get_all_sessions():
-    """Рекурсивно собирает все .session файлы из папки sessions/"""
+    """Рекурсивно собирает ВСЕ .session файлы из папки sessions/"""
     sessions = []
     if os.path.exists(SESSIONS_DIR):
         for root, dirs, files in os.walk(SESSIONS_DIR):
@@ -237,13 +238,123 @@ def get_all_sessions():
                     sessions.append(os.path.join(root, f))
     return sessions
 
+# ===== ОТПРАВКА TELEHON (ВСЕ СЕССИИ) =====
+async def send_telethon_report(user_id, target, edit_callback=None):
+    """Отправляет Telethon-репорт через ВСЕ сессии (au + us + internal)"""
+    all_sessions = get_all_sessions()
+
+    if not all_sessions:
+        if edit_callback:
+            await edit_callback("❌ Нет сессий")
+        return "❌ Нет сессий"
+
+    if not target:
+        if edit_callback:
+            await edit_callback("❌ Неверная ссылка")
+        return "❌ Неверная ссылка"
+
+    # Определяем тип цели
+    message_link_pattern = r'https://t\.me/([^/]+)/(\d+)'
+    match = re.search(message_link_pattern, target)
+    if match:
+        chat_username = match.group(1)
+        message_id = int(match.group(2))
+        is_message = True
+    else:
+        is_message = False
+        if 't.me/' in target:
+            target = target.replace('https://t.me/', '')
+            if '/' in target:
+                target = target.split('/')[0]
+        if not target.startswith('@'):
+            target = '@' + target
+
+    total = len(all_sessions)
+    errors = 0
+    error_details = []
+
+    async def send_one(session_path, index):
+        nonlocal errors, error_details
+        session_name = os.path.basename(session_path)
+        client = None
+        try:
+            client = await try_connect(session_path, timeout=15)
+            if not client:
+                errors += 1
+                error_details.append(f"{session_name}: не удалось подключиться")
+                return
+            
+            if is_message:
+                try:
+                    chat = await client.get_entity(chat_username)
+                    await client(ReportPeerRequest(
+                        peer=chat,
+                        reason=InputReportReasonSpam(),
+                        message=""
+                    ))
+                    print(f"[{session_name}] ✅ Успешно")
+                except UsernameNotOccupiedError:
+                    errors += 1
+                    error_details.append(f"{session_name}: канал не найден")
+                except Exception as e:
+                    errors += 1
+                    error_details.append(f"{session_name}: {str(e)[:50]}")
+            else:
+                try:
+                    entity = await client.get_entity(target)
+                    await client(ReportPeerRequest(
+                        peer=entity,
+                        reason=InputReportReasonSpam(),
+                        message=""
+                    ))
+                    print(f"[{session_name}] ✅ Успешно")
+                except UsernameNotOccupiedError:
+                    errors += 1
+                    error_details.append(f"{session_name}: цель не найдена")
+                except Exception as e:
+                    errors += 1
+                    error_details.append(f"{session_name}: {str(e)[:50]}")
+        except FloodWaitError as e:
+            errors += 1
+            error_details.append(f"{session_name}: FloodWait {e.seconds}s")
+            if edit_callback:
+                await edit_callback(f"⏳ Отправка Telethon... ({index}/{total}) FloodWait {e.seconds}s")
+            await asyncio.sleep(min(e.seconds, 30))
+        except Exception as e:
+            errors += 1
+            error_details.append(f"{session_name}: {str(e)[:50]}")
+        finally:
+            if client:
+                await client.disconnect()
+
+    # Параллельная отправка
+    tasks = [send_one(session_path, i+1) for i, session_path in enumerate(all_sessions)]
+    await asyncio.gather(*tasks)
+
+    # Выводим детали ошибок в консоль
+    for detail in error_details:
+        print(f"[ERROR] {detail}")
+
+    # Формируем результат
+    result = "✅ Telethon — ОТПРАВЛЕНО"
+    if errors > 0:
+        result += f"\n⚠️ Ошибок: {errors}"
+
+    if edit_callback:
+        await edit_callback(result)
+    return result
+
+# ===== ОТПРАВКА МИКС (ТОЛЬКО AU + US) =====
 async def send_mix_report(user_id, target, text, edit_callback=None):
-    """Отправляет микс-жалобу через AU и US сессии"""
+    """Отправляет микс-жалобу ТОЛЬКО через AU и US сессии (без INTERNAL)"""
     all_sessions = []
+    
+    # Собираем сессии только из AU и US
     if os.path.exists(AU_DIR):
         for f in os.listdir(AU_DIR):
             if f.endswith('.session'):
                 all_sessions.append(os.path.join(AU_DIR, f))
+    
     if os.path.exists(US_DIR):
         for f in os.listdir(US_DIR):
             if f.endswith('.session'):
@@ -251,14 +362,12 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
 
     if not all_sessions:
         if edit_callback:
-            await edit_callback("❌ Нет сессий для микса")
-        return "❌ Нет сессий"
+            await edit_callback("❌ Нет сессий для микса (AU + US)")
+        return "❌ Нет сессий для микса"
 
     total = len(all_sessions)
     au_sessions = [s for s in all_sessions if 'au' in s]
     us_sessions = [s for s in all_sessions if 'us' in s]
-    au_total = len(au_sessions)
-    us_total = len(us_sessions)
     current = 0
 
     # AU сессии
@@ -385,98 +494,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         await edit_callback("✅ Микс-жалоба отправлена!")
     return "✅ Микс-жалоба отправлена!"
 
-async def send_telethon_report(user_id, target, edit_callback=None):
-    """Отправляет Telethon-репорт через все сессии, возвращает только статус и количество ошибок"""
-    all_sessions = get_all_sessions()
-
-    if not all_sessions:
-        if edit_callback:
-            await edit_callback("❌ Нет сессий")
-        return "❌ Нет сессий"
-
-    if not target:
-        if edit_callback:
-            await edit_callback("❌ Неверная ссылка")
-        return "❌ Неверная ссылка"
-
-    # Определяем тип цели
-    message_link_pattern = r'https://t\.me/([^/]+)/(\d+)'
-    match = re.search(message_link_pattern, target)
-    if match:
-        chat_username = match.group(1)
-        message_id = int(match.group(2))
-        is_message = True
-    else:
-        is_message = False
-        # Очищаем target для юзернейма
-        if 't.me/' in target:
-            target = target.replace('https://t.me/', '')
-            if '/' in target:
-                target = target.split('/')[0]
-        if not target.startswith('@'):
-            target = '@' + target
-
-    total = len(all_sessions)
-    errors = 0
-
-    async def send_one(session_path, index):
-        nonlocal errors
-        session_name = os.path.basename(session_path)
-        client = None
-        try:
-            client = await try_connect(session_path, timeout=10)
-            if not client:
-                errors += 1
-                return
-            
-            if is_message:
-                try:
-                    chat = await client.get_entity(chat_username)
-                    await client(ReportPeerRequest(
-                        peer=chat,
-                        reason=InputReportReasonSpam(),
-                        message=""
-                    ))
-                except UsernameNotOccupiedError:
-                    errors += 1
-                except Exception:
-                    errors += 1
-            else:
-                try:
-                    entity = await client.get_entity(target)
-                    await client(ReportPeerRequest(
-                        peer=entity,
-                        reason=InputReportReasonSpam(),
-                        message=""
-                    ))
-                except UsernameNotOccupiedError:
-                    errors += 1
-                except Exception:
-                    errors += 1
-        except FloodWaitError as e:
-            errors += 1
-            if edit_callback:
-                await edit_callback(f"⏳ Отправка Telethon... ({index}/{total}) FloodWait {e.seconds}s")
-            await asyncio.sleep(min(e.seconds, 30))
-        except Exception:
-            errors += 1
-        finally:
-            if client:
-                await client.disconnect()
-
-    # Параллельная отправка
-    tasks = [send_one(session_path, i+1) for i, session_path in enumerate(all_sessions)]
-    await asyncio.gather(*tasks)
-
-    # Формируем результат
-    result = "✅ Telethon — ОТПРАВЛЕНО"
-    if errors > 0:
-        result += f"\n⚠️ Ошибок: {errors}"
-
-    if edit_callback:
-        await edit_callback(result)
-    return result
-
+# ===== ОПЕРАТОР =====
 async def send_operator_report(user_id, username, edit_callback=None):
     phone = generate_phone()
     name = "Operator Report"
@@ -490,6 +508,7 @@ async def send_operator_report(user_id, username, edit_callback=None):
         await edit_callback(result)
     return result
 
+# ===== AI =====
 class PowerAI:
     def generate_mix_text(self, target, target_type, violation_desc, evidence_links=""):
         variants = [
@@ -1077,10 +1096,32 @@ async def main_bot():
     except Exception as e:
         print(f"Error: {e}")
 
+# ===== HTTP-СЕРВЕР ДЛЯ RENDER =====
+async def health_check(request):
+    return web.Response(text="I'm alive!")
+
+async def start_http_server():
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host='0.0.0.0', port=10000)
+    await site.start()
+    print("[HTTP] Сервер запущен на порту 10000")
+    await asyncio.Event().wait()
+
+# ===== ЗАПУСК =====
 async def main():
+    # Запускаем HTTP-сервер в фоне
+    http_task = asyncio.create_task(start_http_server())
+    
+    # Запускаем ботов
     main_task = asyncio.create_task(main_bot())
     sub_task = asyncio.create_task(run_subscription_bot())
-    await asyncio.gather(main_task, sub_task)
+    
+    # Ждём всех
+    await asyncio.gather(main_task, sub_task, http_task)
 
 if __name__ == "__main__":
     try:
