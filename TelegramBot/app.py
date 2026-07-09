@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ)
+# app.py — APEX REPORT С GEMINI (ФИНАЛ)
 import os
 import sys
 import json
@@ -21,6 +21,18 @@ try:
 except ImportError:
     TELEGRAM_AVAILABLE = False
 
+# ===== GEMINI =====
+import google.generativeai as genai
+
+GEMINI_API_KEY = 'AQ.Ab8RN6JEMJYBn-iJht01dwzslE4G8Lr9sGdPTBI6TmmwwZUghA'
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    GEMINI_MODEL = genai.GenerativeModel('gemini-2.0-flash-exp')
+    print("[GEMINI] Подключен успешно!")
+else:
+    GEMINI_MODEL = None
+    print("[WARN] Нет API-ключа Gemini")
+
 # ===== ТВОИ ДАННЫЕ =====
 API_ID = 21826549
 API_HASH = 'c1a19f792cfd9e397200d16c7e448160'
@@ -30,7 +42,7 @@ RUCAPTCHA_API_KEY = 'a2e1b40a756ccc16c11ede55eb2c6567'
 SUBSCRIPTION_BOT_TOKEN = '8238807176:AAFBRezNnlRiJ3oE-D81aOQGJ8NvJzBGBiU'
 DEVELOPER_LINK = 'https://t.me/cazlen'
 BOT_NAME = 'APEX REPORT'
-ADMIN_IDS = [8701448954]  # ТВОЙ ID
+ADMIN_IDS = [8701448954]
 
 # ===== ПУТИ =====
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -217,6 +229,79 @@ def get_all_sessions():
                     sessions.append(os.path.join(root, f))
     return sessions
 
+async def get_live_session():
+    """Находит первую живую сессию и возвращает клиент"""
+    all_sessions = get_all_sessions()
+    if not all_sessions:
+        return None
+    
+    for session_path in all_sessions:
+        client = await try_connect(session_path, timeout=10)
+        if client:
+            return client
+    return None
+
+async def analyze_with_gemini(texts, target):
+    """Анализирует текст через Gemini"""
+    if not GEMINI_API_KEY or not GEMINI_MODEL:
+        return None, "Нет API-ключа Gemini"
+    
+    messages_text = "\n".join(texts[:100])
+    
+    if len(messages_text) < 10:
+        return None, "Слишком мало текста для анализа"
+    
+    prompt = f"""
+Ты — AI-аналитик Telegram. Проанализируй сообщения из канала и определи, есть ли нарушения правил Telegram.
+
+**Канал:** {target}
+
+**Сообщения:**
+{messages_text}
+
+**Ответь строго в формате JSON (без лишнего текста):**
+{{
+    "violation": "название_нарушения" или null,
+    "confidence": 0-100,
+    "explanation": "почему ты так считаешь (на русском)",
+    "severity": "high" / "medium" / "low" или null
+}}
+
+**Типы нарушений:**
+- "drugs" — наркотики
+- "spam" — спам
+- "porn" — порнография
+- "violence" — насилие
+- "scam" — мошенничество
+- "personal" — личные данные
+- "bullying" — травля
+
+Не выдумывай. Если нарушений нет — укажи "violation": null.
+Ответь ТОЛЬКО JSON.
+"""
+    
+    try:
+        response = await asyncio.to_thread(
+            GEMINI_MODEL.generate_content,
+            prompt
+        )
+        
+        result_text = response.text.strip()
+        
+        if result_text.startswith('```json'):
+            result_text = result_text.replace('```json', '').replace('```', '').strip()
+        elif result_text.startswith('```'):
+            result_text = result_text.replace('```', '').strip()
+        
+        try:
+            result = json.loads(result_text)
+            return result, None
+        except json.JSONDecodeError:
+            return None, "Ошибка парсинга JSON от Gemini"
+            
+    except Exception as e:
+        return None, f"Ошибка Gemini: {str(e)[:100]}"
+
 # ===== ОТПРАВКА TELEHON (ВСЕ СЕССИИ) =====
 async def send_telethon_report(user_id, target, edit_callback=None):
     all_sessions = get_all_sessions()
@@ -304,7 +389,6 @@ async def send_telethon_report(user_id, target, edit_callback=None):
     if errors > 0:
         result += f"\n⚠️ Ошибок: {errors}"
 
-    # Отправка в канал
     try:
         async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
             channel = await temp_client.get_entity(CHANNEL_ID)
@@ -456,7 +540,6 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             if client:
                 await client.disconnect()
 
-    # Отправка в канал
     try:
         async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
             channel = await temp_client.get_entity(CHANNEL_ID)
@@ -539,24 +622,14 @@ class ContentAnalyzer:
         return None, 0
 
     async def analyze_target(self, target, bot_instance):
-        all_sessions = get_all_sessions()
-        if not all_sessions:
-            return None, "Нет сессий"
+        # Используем ОДНУ живую сессию
+        client = await get_live_session()
+        if not client:
+            return None, "Нет живых сессий для анализа"
 
         messages = []
         target_type = "unknown"
-        client = None
-
-        for session_path in all_sessions:
-            try:
-                client = await try_connect(session_path, timeout=10)
-                if client:
-                    break
-            except:
-                continue
-
-        if not client:
-            return None, "Не удалось подключиться"
+        entity = None
 
         try:
             if 't.me/' in target:
@@ -574,18 +647,19 @@ class ContentAnalyzer:
                 else:
                     target_type = "пользователь"
             else:
+                await client.disconnect()
                 return None, "Неверная ссылка"
 
             try:
                 await client(JoinChannelRequest(entity))
-                await asyncio.sleep(10)
+                await asyncio.sleep(5)
             except:
                 pass
 
             all_messages = []
             offset_id = 0
             limit = 100
-            MAX_MESSAGES = 500
+            MAX_MESSAGES = 200
             total_loaded = 0
 
             while total_loaded < MAX_MESSAGES:
@@ -606,14 +680,58 @@ class ContentAnalyzer:
             messages = all_messages
 
         except Exception as e:
+            await client.disconnect()
             return None, f"Ошибка: {e}"
-        finally:
-            if client:
-                await client.disconnect()
+
+        await client.disconnect()
 
         if not messages:
             return None, "Нет сообщений"
 
+        # === АНАЛИЗ ЧЕРЕЗ GEMINI ===
+        if GEMINI_API_KEY and GEMINI_MODEL:
+            try:
+                ai_result, error = await analyze_with_gemini(messages, target)
+                
+                if ai_result and ai_result.get('violation'):
+                    violation = ai_result['violation']
+                    percent = ai_result.get('confidence', 70)
+                    explanation = ai_result.get('explanation', '')
+                    severity = ai_result.get('severity', 'medium')
+                    
+                    print(f"[GEMINI] Найдено нарушение: {violation} ({percent}%)")
+                    print(f"[GEMINI] Объяснение: {explanation}")
+                    
+                    # Отправляем отчёт в канал
+                    try:
+                        async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
+                            channel = await temp_client.get_entity(CHANNEL_ID)
+                            report_text = (
+                                f"🔍 AI Анализ (Gemini): {target}\n"
+                                f"⚠️ Нарушение: {violation.upper()} ({percent}%)\n"
+                                f"📝 Объяснение: {explanation}\n"
+                                f"📊 Сообщений: {len(messages)}\n"
+                                f"🚨 Серьёзность: {severity.upper()}"
+                            )
+                            await temp_client.send_message(channel, report_text)
+                    except Exception as e:
+                        print(f"[GEMINI] Не удалось отправить в канал: {e}")
+                    
+                    return {
+                        "results": {},
+                        "violation": violation,
+                        "percent": percent,
+                        "messages": messages,
+                        "target_type": target_type,
+                        "count": len(messages)
+                    }, None
+                    
+                elif ai_result:
+                    print(f"[GEMINI] Нарушений не найдено")
+            except Exception as e:
+                print(f"[GEMINI] Ошибка: {e}")
+
+        # === ФОЛБЭК: Старый анализ по ключевым словам ===
         results = self.analyze_messages(messages)
         violation, percent = self.get_violation(results)
 
@@ -626,7 +744,6 @@ class ContentAnalyzer:
             "count": len(messages)
         }
 
-        # Отправка в канал, если найдено нарушение
         if violation:
             try:
                 async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
@@ -639,7 +756,6 @@ class ContentAnalyzer:
                         f"⚠️ Найдено нарушение!"
                     )
                     await temp_client.send_message(channel, report_text)
-                    print(f"[AI] Отчёт отправлен в канал {CHANNEL_ID}")
             except Exception as e:
                 print(f"[AI] Не удалось отправить в канал: {e}")
 
@@ -1009,7 +1125,7 @@ async def main_bot():
                 if 't.me/' in text or text.startswith('@'):
                     target = text
                     user_states.pop(user_id, None)
-                    await upd("⏳ Сканирование...")
+                    await upd("⏳ Сканирование через Gemini...")
                     
                     analyzer = ContentAnalyzer()
                     result, error = await analyzer.analyze_target(target, None)
@@ -1027,9 +1143,9 @@ async def main_bot():
                     messages = result["messages"]
                     target_type = result["target_type"]
                     
-                    report = f"🔍 AI-АНАЛИЗ\n\nЦель: {target}\nТип: {target_type.upper()}\nСообщений: {len(messages)}\n"
+                    report = f"🔍 AI-АНАЛИЗ (Gemini)\n\nЦель: {target}\nТип: {target_type.upper()}\nСообщений: {len(messages)}\n"
                     if violation:
-                        report += f"Нарушение: {violation.upper()} ({percent}%)\n❌ Найдено!"
+                        report += f"⚠️ Нарушение: {violation.upper()} ({percent}%)\n❌ Найдено!"
                     else:
                         report += f"Нарушений: 0\n✅ Чисто"
                     
