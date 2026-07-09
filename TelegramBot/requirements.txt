@@ -1,4 +1,3 @@
 telethon
 aiohttp
 requests
-google-generativeai
