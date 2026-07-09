@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ФИНАЛЬНЫЙ, РАБОЧИЙ)
+# app.py — APEX REPORT (ПОЛНАЯ ПЕРЕПИСАННАЯ ВЕРСИЯ)
 import os
 import sys
 import json
@@ -118,7 +118,7 @@ def has_subscription(user_id):
 def generate_phone():
     return f"+7{random.randint(1000000000, 9999999999)}"
 
-async def try_connect(session_path, timeout=15):
+async def try_connect(session_path, timeout=20):
     client = None
     try:
         client = TelegramClient(session_path, API_ID, API_HASH)
@@ -221,7 +221,7 @@ async def send_operator_report(user_id, username, edit_callback=None):
         await edit_callback(result)
     return result
 
-# ===== ОТПРАВКА TELEHON (ВСЕ СЕССИИ) =====
+# ===== ТЕЛЕТОН (ПЕРЕПИСАННЫЙ, С ПОВТОРНЫМИ ПОПЫТКАМИ) =====
 async def send_telethon_report(user_id, target, edit_callback=None):
     all_sessions = get_all_sessions()
     if not all_sessions:
@@ -233,6 +233,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             await edit_callback("❌ Неверная ссылка")
         return "❌ Неверная ссылка"
 
+    # Парсим цель
     message_link_pattern = r'https://t\.me/([^/]+)/(\d+)'
     match = re.search(message_link_pattern, target)
     if match:
@@ -255,50 +256,80 @@ async def send_telethon_report(user_id, target, edit_callback=None):
         nonlocal errors, error_details
         session_name = os.path.basename(session_path)
         client = None
-        try:
-            client = await try_connect(session_path, timeout=15)
-            if not client:
-                errors += 1
-                error_details.append(f"{session_name}: не удалось подключиться")
-                return
-            if is_message:
-                try:
-                    chat = await client.get_entity(chat_username)
-                    await client(ReportPeerRequest(peer=chat, reason=InputReportReasonSpam(), message=""))
-                    print(f"[{session_name}] ✅ Успешно")
-                except UsernameNotOccupiedError:
-                    errors += 1
-                    error_details.append(f"{session_name}: канал не найден")
-                except Exception as e:
+        success = False
+        
+        # ПЫТАЕМСЯ 2 РАЗА
+        for attempt in range(2):
+            try:
+                # Подключаемся с увеличенным таймаутом
+                client = await try_connect(session_path, timeout=20)
+                if not client:
+                    if attempt == 1:
+                        errors += 1
+                        error_details.append(f"{session_name}: не удалось подключиться")
+                    continue
+                
+                # Получаем сущность и отправляем жалобу
+                if is_message:
+                    try:
+                        chat = await client.get_entity(chat_username)
+                        await client(ReportPeerRequest(peer=chat, reason=InputReportReasonSpam(), message=""))
+                        print(f"[{session_name}] ✅ Успешно (попытка {attempt+1})")
+                        success = True
+                        break
+                    except UsernameNotOccupiedError:
+                        if attempt == 1:
+                            errors += 1
+                            error_details.append(f"{session_name}: канал не найден")
+                    except FloodWaitError as e:
+                        if attempt == 1:
+                            errors += 1
+                            error_details.append(f"{session_name}: FloodWait {e.seconds}s")
+                        await asyncio.sleep(min(e.seconds, 30))
+                    except Exception as e:
+                        if attempt == 1:
+                            errors += 1
+                            error_details.append(f"{session_name}: {str(e)[:50]}")
+                else:
+                    try:
+                        entity = await client.get_entity(target)
+                        await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
+                        print(f"[{session_name}] ✅ Успешно (попытка {attempt+1})")
+                        success = True
+                        break
+                    except UsernameNotOccupiedError:
+                        if attempt == 1:
+                            errors += 1
+                            error_details.append(f"{session_name}: цель не найдена")
+                    except FloodWaitError as e:
+                        if attempt == 1:
+                            errors += 1
+                            error_details.append(f"{session_name}: FloodWait {e.seconds}s")
+                        await asyncio.sleep(min(e.seconds, 30))
+                    except Exception as e:
+                        if attempt == 1:
+                            errors += 1
+                            error_details.append(f"{session_name}: {str(e)[:50]}")
+            except Exception as e:
+                if attempt == 1:
                     errors += 1
                     error_details.append(f"{session_name}: {str(e)[:50]}")
-            else:
-                try:
-                    entity = await client.get_entity(target)
-                    await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
-                    print(f"[{session_name}] ✅ Успешно")
-                except UsernameNotOccupiedError:
-                    errors += 1
-                    error_details.append(f"{session_name}: цель не найдена")
-                except Exception as e:
-                    errors += 1
-                    error_details.append(f"{session_name}: {str(e)[:50]}")
-        except FloodWaitError as e:
-            errors += 1
-            error_details.append(f"{session_name}: FloodWait {e.seconds}s")
-            if edit_callback:
-                await edit_callback(f"⏳ Отправка Telethon... ({index}/{total}) FloodWait {e.seconds}s")
-            await asyncio.sleep(min(e.seconds, 30))
-        except Exception as e:
-            errors += 1
-            error_details.append(f"{session_name}: {str(e)[:50]}")
-        finally:
-            if client:
-                await client.disconnect()
+            finally:
+                if client:
+                    await client.disconnect()
+                    client = None
+                # Ждём между попытками
+                if not success:
+                    await asyncio.sleep(2)
 
+        if not success:
+            print(f"[{session_name}] ❌ Не удалось после 2 попыток")
+
+    # Запускаем все сессии параллельно
     tasks = [send_one(session_path, i+1) for i, session_path in enumerate(all_sessions)]
     await asyncio.gather(*tasks)
 
+    # Выводим детали ошибок
     for detail in error_details:
         print(f"[ERROR] {detail}")
 
@@ -306,6 +337,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
     if errors > 0:
         result += f"\n⚠️ Ошибок: {errors}"
 
+    # Отправляем в канал
     try:
         async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
             channel = await temp_client.get_entity(CHANNEL_ID)
@@ -346,7 +378,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         session_name = os.path.basename(session_path)
         client = None
         try:
-            client = await try_connect(session_path, timeout=10)
+            client = await try_connect(session_path, timeout=15)
             if not client:
                 continue
             await join_chat_if_needed(client, target)
@@ -405,7 +437,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         session_name = os.path.basename(session_path)
         client = None
         try:
-            client = await try_connect(session_path, timeout=10)
+            client = await try_connect(session_path, timeout=15)
             if not client:
                 continue
             await join_chat_if_needed(client, target)
@@ -530,7 +562,6 @@ class ContentAnalyzer:
         }
 
     def check_violation(self, text):
-        """Проверяет одно сообщение на наличие ключевых слов"""
         text_lower = text.lower()
         for category, words in self.keywords.items():
             for word in words:
@@ -591,7 +622,6 @@ class ContentAnalyzer:
                 await client.disconnect()
                 return None, "Неверная ссылка"
 
-            # ПОДПИСКА (для закрытых каналов)
             try:
                 await client(JoinChannelRequest(entity))
                 await asyncio.sleep(5)
@@ -617,7 +647,6 @@ class ContentAnalyzer:
         results = self.analyze_messages(messages)
         violation, percent = self.get_violation(results)
 
-        # Формируем ссылки
         links = []
         if violation and chat_username:
             for msg_id in violation_messages[:5]:
