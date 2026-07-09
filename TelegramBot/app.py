@@ -1,15 +1,13 @@
-# app.py — APEX REPORT (ПОЛНАЯ ВЕРСИЯ, ИСПРАВЛЕННАЯ)
+# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ)
 import os
 import sys
 import json
 import asyncio
-import threading
 import re
 import random
 import time
 from datetime import datetime, timedelta
 import aiohttp
-import requests
 from aiohttp import web
 
 try:
@@ -17,7 +15,7 @@ try:
     from telethon.tl.types import KeyboardButtonCallback
     from telethon.tl.functions.account import ReportPeerRequest
     from telethon.tl.functions.channels import JoinChannelRequest
-    from telethon.tl.types import InputReportReasonOther, InputReportReasonSpam, InputReportReasonIllegalDrugs, InputReportReasonPornography, InputReportReasonViolence
+    from telethon.tl.types import InputReportReasonSpam
     from telethon.errors import FloodWaitError, UsernameNotOccupiedError
     TELEGRAM_AVAILABLE = True
 except ImportError:
@@ -32,30 +30,12 @@ RUCAPTCHA_API_KEY = 'a2e1b40a756ccc16c11ede55eb2c6567'
 SUBSCRIPTION_BOT_TOKEN = '8238807176:AAFBRezNnlRiJ3oE-D81aOQGJ8NvJzBGBiU'
 DEVELOPER_LINK = 'https://t.me/cazlen'
 BOT_NAME = 'APEX REPORT'
-
-# ===== АДМИНЫ (ТОЛЬКО ТЫ) =====
-ADMIN_IDS = [8701448954]  # ← ТВОЙ ID
+ADMIN_IDS = [8701448954]  # ТВОЙ ID
 
 # ===== ПУТИ =====
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-possible_sessions_dirs = [
-    os.path.join(BASE_DIR, 'sessions'),
-    os.path.join(BASE_DIR, 'сессии'),
-    os.path.join(BASE_DIR, '..', 'sessions'),
-]
-
-SESSIONS_DIR = None
-for d in possible_sessions_dirs:
-    if os.path.exists(d):
-        SESSIONS_DIR = d
-        print(f"[INFO] Найдена папка с сессиями: {SESSIONS_DIR}")
-        break
-
-if not SESSIONS_DIR:
-    SESSIONS_DIR = os.path.join(BASE_DIR, 'sessions')
-    os.makedirs(SESSIONS_DIR, exist_ok=True)
-    print(f"[INFO] Создана папка с сессиями: {SESSIONS_DIR}")
+SESSIONS_DIR = os.path.join(BASE_DIR, 'sessions')
+os.makedirs(SESSIONS_DIR, exist_ok=True)
 
 AU_DIR = os.path.join(SESSIONS_DIR, 'au')
 US_DIR = os.path.join(SESSIONS_DIR, 'us')
@@ -200,7 +180,7 @@ async def send_web_report(api_key, name, phone, text):
     except:
         return False, "ошибка"
 
-async def try_connect(session_path, timeout=10):
+async def try_connect(session_path, timeout=15):
     client = None
     try:
         client = TelegramClient(session_path, API_ID, API_HASH)
@@ -229,7 +209,6 @@ async def join_chat_if_needed(client, target):
         return False
 
 def get_all_sessions():
-    """Рекурсивно собирает ВСЕ .session файлы из папки sessions/"""
     sessions = []
     if os.path.exists(SESSIONS_DIR):
         for root, dirs, files in os.walk(SESSIONS_DIR):
@@ -240,9 +219,7 @@ def get_all_sessions():
 
 # ===== ОТПРАВКА TELEHON (ВСЕ СЕССИИ) =====
 async def send_telethon_report(user_id, target, edit_callback=None):
-    """Отправляет Telethon-репорт через ВСЕ сессии (au + us + internal)"""
     all_sessions = get_all_sessions()
-
     if not all_sessions:
         if edit_callback:
             await edit_callback("❌ Нет сессий")
@@ -253,12 +230,10 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             await edit_callback("❌ Неверная ссылка")
         return "❌ Неверная ссылка"
 
-    # Определяем тип цели
     message_link_pattern = r'https://t\.me/([^/]+)/(\d+)'
     match = re.search(message_link_pattern, target)
     if match:
         chat_username = match.group(1)
-        message_id = int(match.group(2))
         is_message = True
     else:
         is_message = False
@@ -287,11 +262,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             if is_message:
                 try:
                     chat = await client.get_entity(chat_username)
-                    await client(ReportPeerRequest(
-                        peer=chat,
-                        reason=InputReportReasonSpam(),
-                        message=""
-                    ))
+                    await client(ReportPeerRequest(peer=chat, reason=InputReportReasonSpam(), message=""))
                     print(f"[{session_name}] ✅ Успешно")
                 except UsernameNotOccupiedError:
                     errors += 1
@@ -302,11 +273,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             else:
                 try:
                     entity = await client.get_entity(target)
-                    await client(ReportPeerRequest(
-                        peer=entity,
-                        reason=InputReportReasonSpam(),
-                        message=""
-                    ))
+                    await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
                     print(f"[{session_name}] ✅ Успешно")
                 except UsernameNotOccupiedError:
                     errors += 1
@@ -327,18 +294,23 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             if client:
                 await client.disconnect()
 
-    # Параллельная отправка
     tasks = [send_one(session_path, i+1) for i, session_path in enumerate(all_sessions)]
     await asyncio.gather(*tasks)
 
-    # Выводим детали ошибок в консоль
     for detail in error_details:
         print(f"[ERROR] {detail}")
 
-    # Формируем результат
     result = "✅ Telethon — ОТПРАВЛЕНО"
     if errors > 0:
         result += f"\n⚠️ Ошибок: {errors}"
+
+    # Отправка в канал
+    try:
+        async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
+            channel = await temp_client.get_entity(CHANNEL_ID)
+            await temp_client.send_message(channel, f"✅ Telethon репорт на {target}\nОшибок: {errors}")
+    except Exception as e:
+        print(f"[ERROR] Не удалось отправить в канал: {e}")
 
     if edit_callback:
         await edit_callback(result)
@@ -346,15 +318,11 @@ async def send_telethon_report(user_id, target, edit_callback=None):
 
 # ===== ОТПРАВКА МИКС (ТОЛЬКО AU + US) =====
 async def send_mix_report(user_id, target, text, edit_callback=None):
-    """Отправляет микс-жалобу ТОЛЬКО через AU и US сессии (без INTERNAL)"""
     all_sessions = []
-    
-    # Собираем сессии только из AU и US
     if os.path.exists(AU_DIR):
         for f in os.listdir(AU_DIR):
             if f.endswith('.session'):
                 all_sessions.append(os.path.join(AU_DIR, f))
-    
     if os.path.exists(US_DIR):
         for f in os.listdir(US_DIR):
             if f.endswith('.session'):
@@ -370,7 +338,6 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
     us_sessions = [s for s in all_sessions if 'us' in s]
     current = 0
 
-    # AU сессии
     for session_path in au_sessions:
         current += 1
         if edit_callback:
@@ -430,7 +397,6 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             if client:
                 await client.disconnect()
 
-    # US сессии
     for session_path in us_sessions:
         current += 1
         if edit_callback:
@@ -490,6 +456,14 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             if client:
                 await client.disconnect()
 
+    # Отправка в канал
+    try:
+        async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
+            channel = await temp_client.get_entity(CHANNEL_ID)
+            await temp_client.send_message(channel, f"✅ Микс-жалоба отправлена на {target}")
+    except Exception as e:
+        print(f"[ERROR] Не удалось отправить в канал: {e}")
+
     if edit_callback:
         await edit_callback("✅ Микс-жалоба отправлена!")
     return "✅ Микс-жалоба отправлена!"
@@ -502,6 +476,12 @@ async def send_operator_report(user_id, username, edit_callback=None):
     success, msg = await send_web_report(RUCAPTCHA_API_KEY, name, phone, text)
     if success:
         result = f"✅ Оператор {username}"
+        try:
+            async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
+                channel = await temp_client.get_entity(CHANNEL_ID)
+                await temp_client.send_message(channel, f"✅ Оператор {username} — жалоба отправлена")
+        except:
+            pass
     else:
         result = f"❌ Оператор {username}: {msg}"
     if edit_callback:
@@ -525,13 +505,18 @@ class PowerAI:
 class ContentAnalyzer:
     def __init__(self):
         self.keywords = {
-            "drugs": ["buy", "cocaine", "heroin", "meth", "drugs", "shop", "dealer"],
-            "spam": ["spam", "ad", "promo", "subscribe", "referral"],
-            "porn": ["porn", "sex", "nude", "18+"],
-            "violence": ["violence", "kill", "death", "blood", "weapon"],
-            "scam": ["scam", "pyramid", "invest", "phishing"],
-            "personal": ["passport", "address", "phone", "personal", "data"],
-            "bullying": ["bullying", "harass", "threat", "insult"]
+            "drugs": [
+                "buy", "cocaine", "heroin", "meth", "drugs", "shop", "dealer",
+                "наркотик", "кокаин", "героин", "метамфетамин", "экстази", "марихуана",
+                "продажа", "продам", "куплю", "закладка", "шишки", "бошки", "соль",
+                "трава", "план", "вещество", "синтетика", "аптечка"
+            ],
+            "spam": ["spam", "ad", "promo", "subscribe", "referral", "реклама", "подпишись", "пиар"],
+            "porn": ["porn", "sex", "nude", "18+", "порно", "секс", "голый", "эротика"],
+            "violence": ["violence", "kill", "death", "blood", "weapon", "насилие", "убить", "смерть", "оружие"],
+            "scam": ["scam", "pyramid", "invest", "phishing", "лохотрон", "пирамида", "инвестиции", "развод"],
+            "personal": ["passport", "address", "phone", "personal", "data", "паспорт", "адрес", "телефон", "личные"],
+            "bullying": ["bullying", "harass", "threat", "insult", "травля", "угроза", "оскорбление", "буллинг"]
         }
 
     def analyze_text(self, text):
@@ -632,14 +617,33 @@ class ContentAnalyzer:
         results = self.analyze_messages(messages)
         violation, percent = self.get_violation(results)
 
-        return {
+        result = {
             "results": results,
             "violation": violation,
             "percent": percent,
             "messages": messages,
             "target_type": target_type,
             "count": len(messages)
-        }, None
+        }
+
+        # Отправка в канал, если найдено нарушение
+        if violation:
+            try:
+                async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
+                    channel = await temp_client.get_entity(CHANNEL_ID)
+                    report_text = (
+                        f"🔍 AI Анализ: {target}\n"
+                        f"Тип: {target_type.upper()}\n"
+                        f"Нарушение: {violation.upper()} ({percent}%)\n"
+                        f"Сообщений: {len(messages)}\n"
+                        f"⚠️ Найдено нарушение!"
+                    )
+                    await temp_client.send_message(channel, report_text)
+                    print(f"[AI] Отчёт отправлен в канал {CHANNEL_ID}")
+            except Exception as e:
+                print(f"[AI] Не удалось отправить в канал: {e}")
+
+        return result, None
 
 # ===== ВТОРОЙ БОТ (ДЛЯ ПОДПИСОК) =====
 async def run_subscription_bot():
@@ -750,7 +754,6 @@ async def run_subscription_bot():
                 expiry = datetime.now() + timedelta(days=days)
                 subs[uid] = {'expiry': expiry.isoformat()}
                 save_subs(subs)
-                # Удаляем заявку пользователя
                 requests = load_requests()
                 requests = [r for r in requests if r.get('user_id') != int(uid)]
                 save_requests(requests)
@@ -784,10 +787,9 @@ async def main_bot():
 
         user_states = {}
         user_data = {}
-        active_messages = {}  # {user_id: message}
+        active_messages = {}
 
         async def update_message(event, text, buttons=None):
-            """Редактирует или создаёт сообщение для конкретного пользователя"""
             user_id = event.sender_id
             try:
                 if user_id in active_messages:
@@ -1113,14 +1115,9 @@ async def start_http_server():
 
 # ===== ЗАПУСК =====
 async def main():
-    # Запускаем HTTP-сервер в фоне
     http_task = asyncio.create_task(start_http_server())
-    
-    # Запускаем ботов
     main_task = asyncio.create_task(main_bot())
     sub_task = asyncio.create_task(run_subscription_bot())
-    
-    # Ждём всех
     await asyncio.gather(main_task, sub_task, http_task)
 
 if __name__ == "__main__":
