@@ -1,4 +1,4 @@
-# app.py — APEX REPORT С GEMINI (ФИНАЛ)
+# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ БЕЗ GEMINI)
 import os
 import sys
 import json
@@ -20,18 +20,6 @@ try:
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
-
-# ===== GEMINI =====
-import google.generativeai as genai
-
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    GEMINI_MODEL = genai.GenerativeModel('gemini-2.0-flash-exp')
-    print("[GEMINI] Подключен успешно!")
-else:
-    GEMINI_MODEL = None
-    print("[WARN] Нет API-ключа Gemini")
 
 # ===== ТВОИ ДАННЫЕ =====
 API_ID = 21826549
@@ -230,77 +218,14 @@ def get_all_sessions():
     return sessions
 
 async def get_live_session():
-    """Находит первую живую сессию и возвращает клиент"""
     all_sessions = get_all_sessions()
     if not all_sessions:
         return None
-    
     for session_path in all_sessions:
         client = await try_connect(session_path, timeout=10)
         if client:
             return client
     return None
-
-async def analyze_with_gemini(texts, target):
-    """Анализирует текст через Gemini"""
-    if not GEMINI_API_KEY or not GEMINI_MODEL:
-        return None, "Нет API-ключа Gemini"
-    
-    messages_text = "\n".join(texts[:100])
-    
-    if len(messages_text) < 10:
-        return None, "Слишком мало текста для анализа"
-    
-    prompt = f"""
-Ты — AI-аналитик Telegram. Проанализируй сообщения из канала и определи, есть ли нарушения правил Telegram.
-
-**Канал:** {target}
-
-**Сообщения:**
-{messages_text}
-
-**Ответь строго в формате JSON (без лишнего текста):**
-{{
-    "violation": "название_нарушения" или null,
-    "confidence": 0-100,
-    "explanation": "почему ты так считаешь (на русском)",
-    "severity": "high" / "medium" / "low" или null
-}}
-
-**Типы нарушений:**
-- "drugs" — наркотики
-- "spam" — спам
-- "porn" — порнография
-- "violence" — насилие
-- "scam" — мошенничество
-- "personal" — личные данные
-- "bullying" — травля
-
-Не выдумывай. Если нарушений нет — укажи "violation": null.
-Ответь ТОЛЬКО JSON.
-"""
-    
-    try:
-        response = await asyncio.to_thread(
-            GEMINI_MODEL.generate_content,
-            prompt
-        )
-        
-        result_text = response.text.strip()
-        
-        if result_text.startswith('```json'):
-            result_text = result_text.replace('```json', '').replace('```', '').strip()
-        elif result_text.startswith('```'):
-            result_text = result_text.replace('```', '').strip()
-        
-        try:
-            result = json.loads(result_text)
-            return result, None
-        except json.JSONDecodeError:
-            return None, "Ошибка парсинга JSON от Gemini"
-            
-    except Exception as e:
-        return None, f"Ошибка Gemini: {str(e)[:100]}"
 
 # ===== ОТПРАВКА TELEHON (ВСЕ СЕССИИ) =====
 async def send_telethon_report(user_id, target, edit_callback=None):
@@ -309,7 +234,6 @@ async def send_telethon_report(user_id, target, edit_callback=None):
         if edit_callback:
             await edit_callback("❌ Нет сессий")
         return "❌ Нет сессий"
-
     if not target:
         if edit_callback:
             await edit_callback("❌ Неверная ссылка")
@@ -343,7 +267,6 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 errors += 1
                 error_details.append(f"{session_name}: не удалось подключиться")
                 return
-            
             if is_message:
                 try:
                     chat = await client.get_entity(chat_username)
@@ -571,7 +494,7 @@ async def send_operator_report(user_id, username, edit_callback=None):
         await edit_callback(result)
     return result
 
-# ===== AI =====
+# ===== КЛАСС ДЛЯ ГЕНЕРАЦИИ ТЕКСТА МИКСА =====
 class PowerAI:
     def generate_mix_text(self, target, target_type, violation_desc, evidence_links=""):
         variants = [
@@ -585,29 +508,70 @@ class PowerAI:
         report += " Signed, Telegram Compliance Reporting System."
         return report
 
+# ===== МОЩНЫЙ АНАЛИЗАТОР (БЕЗ GEMINI) =====
 class ContentAnalyzer:
     def __init__(self):
         self.keywords = {
             "drugs": [
-                "buy", "cocaine", "heroin", "meth", "drugs", "shop", "dealer",
-                "наркотик", "кокаин", "героин", "метамфетамин", "экстази", "марихуана",
-                "продажа", "продам", "куплю", "закладка", "шишки", "бошки", "соль",
-                "трава", "план", "вещество", "синтетика", "аптечка"
+                "наркотик", "наркота", "наркотики", "кокаин", "кока", "кокс",
+                "героин", "метамфетамин", "экстази", "марихуана", "анаша", "план",
+                "шишки", "бошки", "гашиш", "спайс", "соль", "скорость", "кристалл",
+                "закладка", "закладки", "продажа", "продам", "куплю", "синтетика",
+                "drugs", "cocaine", "heroin", "meth", "mdma", "weed", "cannabis"
             ],
-            "spam": ["spam", "ad", "promo", "subscribe", "referral", "реклама", "подпишись", "пиар"],
-            "porn": ["porn", "sex", "nude", "18+", "порно", "секс", "голый", "эротика"],
-            "violence": ["violence", "kill", "death", "blood", "weapon", "насилие", "убить", "смерть", "оружие"],
-            "scam": ["scam", "pyramid", "invest", "phishing", "лохотрон", "пирамида", "инвестиции", "развод"],
-            "personal": ["passport", "address", "phone", "personal", "data", "паспорт", "адрес", "телефон", "личные"],
-            "bullying": ["bullying", "harass", "threat", "insult", "травля", "угроза", "оскорбление", "буллинг"]
+            "personal": [
+                "паспорт", "фио", "ф.и.о", "адрес", "прописка", "регистрация",
+                "дом", "квартира", "подъезд", "этаж", "улица", "телефон",
+                "снилс", "инн", "личные данные", "passport", "address", "phone"
+            ],
+            "porn": [
+                "порно", "порнография", "секс", "эротика", "голый", "голая",
+                "интим", "18+", "porn", "sex", "nude", "adult"
+            ],
+            "violence": [
+                "насилие", "убить", "убийство", "смерть", "оружие", "пистолет",
+                "нож", "угроза", "избить", "кровь", "взорвать", "бомба",
+                "violence", "kill", "death", "weapon", "gun", "threat"
+            ],
+            "spam": [
+                "спам", "реклама", "пиар", "подпишись", "подписка", "рассылка",
+                "spam", "ad", "promo", "subscribe"
+            ],
+            "scam": [
+                "лохотрон", "развод", "обман", "мошенник", "пирамида",
+                "инвестиции", "фишинг", "scam", "fraud", "phishing"
+            ],
+            "bullying": [
+                "буллинг", "травля", "оскорбление", "унижение", "bullying",
+                "harassment", "insult"
+            ]
+        }
+        
+        self.patterns = {
+            "phone": r'(\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}',
+            "email": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+            "passport": r'[0-9]{4}\s?[0-9]{6}',
+            "address": r'(г|гор|город|ул|улица|пр|проспект|пер|переулок|бул|бульвар|д|дом|кв|квартира)[\.\s]',
+            "fio": r'[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+'
         }
 
     def analyze_text(self, text):
         text_lower = text.lower()
         results = {}
         for category, words in self.keywords.items():
-            count = sum(1 for word in words if word in text_lower)
-            results[category] = min(int((count / len(words)) * 100), 100)
+            count = 0
+            for word in words:
+                if word in text_lower:
+                    count += 1
+            results[category] = min(count * 25, 100)
+        
+        for pattern_name, pattern in self.patterns.items():
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                cat_map = {"phone": "personal", "email": "personal", "passport": "personal", "address": "personal", "fio": "personal"}
+                if pattern_name in cat_map:
+                    cat = cat_map[pattern_name]
+                    results[cat] = min(results.get(cat, 0) + 30, 100)
         return results
 
     def analyze_messages(self, messages):
@@ -622,30 +586,24 @@ class ContentAnalyzer:
         return None, 0
 
     async def analyze_target(self, target, bot_instance):
-        # Используем ОДНУ живую сессию
         client = await get_live_session()
         if not client:
-            return None, "Нет живых сессий для анализа"
+            return None, "Нет живых сессий"
 
         messages = []
         target_type = "unknown"
-        entity = None
 
         try:
             if 't.me/' in target:
-                username = target.replace('https://t.me/', '')
-                if '/' in username:
-                    username = username.split('/')[0]
+                username = target.replace('https://t.me/', '').split('/')[0]
                 entity = await client.get_entity(f"@{username}")
                 target_type = "канал"
             elif target.startswith('@'):
                 entity = await client.get_entity(target)
+                target_type = "бот" if entity.bot else "пользователь"
                 if entity.bot:
-                    target_type = "бот"
                     await client.send_message(entity, '/start')
                     await asyncio.sleep(2)
-                else:
-                    target_type = "пользователь"
             else:
                 await client.disconnect()
                 return None, "Неверная ссылка"
@@ -656,28 +614,16 @@ class ContentAnalyzer:
             except:
                 pass
 
-            all_messages = []
             offset_id = 0
-            limit = 100
-            MAX_MESSAGES = 200
-            total_loaded = 0
-
-            while total_loaded < MAX_MESSAGES:
-                try:
-                    msgs = await client.get_messages(entity, limit=min(limit, MAX_MESSAGES - total_loaded), offset_id=offset_id)
-                    if not msgs:
-                        break
-                    for m in msgs:
-                        if m and m.text:
-                            all_messages.append(m.text)
-                    offset_id = msgs[-1].id
-                    total_loaded += len(msgs)
-                    if len(msgs) < limit:
-                        break
-                except:
+            for _ in range(2):
+                msgs = await client.get_messages(entity, limit=100, offset_id=offset_id)
+                if not msgs:
                     break
-
-            messages = all_messages
+                for m in msgs:
+                    if m and m.text:
+                        messages.append(m.text)
+                offset_id = msgs[-1].id
+                await asyncio.sleep(1)
 
         except Exception as e:
             await client.disconnect()
@@ -688,50 +634,6 @@ class ContentAnalyzer:
         if not messages:
             return None, "Нет сообщений"
 
-        # === АНАЛИЗ ЧЕРЕЗ GEMINI ===
-        if GEMINI_API_KEY and GEMINI_MODEL:
-            try:
-                ai_result, error = await analyze_with_gemini(messages, target)
-                
-                if ai_result and ai_result.get('violation'):
-                    violation = ai_result['violation']
-                    percent = ai_result.get('confidence', 70)
-                    explanation = ai_result.get('explanation', '')
-                    severity = ai_result.get('severity', 'medium')
-                    
-                    print(f"[GEMINI] Найдено нарушение: {violation} ({percent}%)")
-                    print(f"[GEMINI] Объяснение: {explanation}")
-                    
-                    # Отправляем отчёт в канал
-                    try:
-                        async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
-                            channel = await temp_client.get_entity(CHANNEL_ID)
-                            report_text = (
-                                f"🔍 AI Анализ (Gemini): {target}\n"
-                                f"⚠️ Нарушение: {violation.upper()} ({percent}%)\n"
-                                f"📝 Объяснение: {explanation}\n"
-                                f"📊 Сообщений: {len(messages)}\n"
-                                f"🚨 Серьёзность: {severity.upper()}"
-                            )
-                            await temp_client.send_message(channel, report_text)
-                    except Exception as e:
-                        print(f"[GEMINI] Не удалось отправить в канал: {e}")
-                    
-                    return {
-                        "results": {},
-                        "violation": violation,
-                        "percent": percent,
-                        "messages": messages,
-                        "target_type": target_type,
-                        "count": len(messages)
-                    }, None
-                    
-                elif ai_result:
-                    print(f"[GEMINI] Нарушений не найдено")
-            except Exception as e:
-                print(f"[GEMINI] Ошибка: {e}")
-
-        # === ФОЛБЭК: Старый анализ по ключевым словам ===
         results = self.analyze_messages(messages)
         violation, percent = self.get_violation(results)
 
@@ -748,20 +650,19 @@ class ContentAnalyzer:
             try:
                 async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
                     channel = await temp_client.get_entity(CHANNEL_ID)
-                    report_text = (
+                    await temp_client.send_message(channel, 
                         f"🔍 AI Анализ: {target}\n"
                         f"Тип: {target_type.upper()}\n"
-                        f"Нарушение: {violation.upper()} ({percent}%)\n"
-                        f"Сообщений: {len(messages)}\n"
-                        f"⚠️ Найдено нарушение!"
+                        f"⚠️ Нарушение: {violation.upper()} ({percent}%)\n"
+                        f"📊 Сообщений: {len(messages)}\n"
+                        f"❌ Найдено нарушение!"
                     )
-                    await temp_client.send_message(channel, report_text)
-            except Exception as e:
-                print(f"[AI] Не удалось отправить в канал: {e}")
+            except:
+                pass
 
         return result, None
 
-# ===== ВТОРОЙ БОТ (ДЛЯ ПОДПИСОК) =====
+# ===== ВТОРОЙ БОТ (ПОДПИСКИ) =====
 async def run_subscription_bot():
     try:
         print("[SUB-BOT] Запуск...")
@@ -853,10 +754,8 @@ async def run_subscription_bot():
                 return
             user_id = event.sender_id
             state = user_states.get(user_id)
-            
             if not state:
                 return
-
             await event.delete()
             text = event.message.text.strip()
 
@@ -923,7 +822,6 @@ async def main_bot():
             if user_id not in data.get('users', []):
                 data.setdefault('users', []).append(user_id)
                 save_data(data)
-            
             if has_subscription(user_id):
                 buttons = [
                     [KeyboardButtonCallback("📋 Меню", b"main_menu")],
@@ -939,12 +837,11 @@ async def main_bot():
             await event.answer()
             user_id = event.sender_id
             data = event.data.decode('utf-8')
-            
             try:
                 await event.message.delete()
             except:
                 pass
-            
+
             async def upd(text, buttons=None):
                 await update_message(event, text, buttons)
 
@@ -961,7 +858,7 @@ async def main_bot():
                 ]
                 await upd("📋 МЕНЮ", buttons)
                 return
-            
+
             if data == "profile":
                 user_entity = await event.client.get_entity(user_id)
                 username = f"@{user_entity.username}" if user_entity.username else "—"
@@ -969,11 +866,11 @@ async def main_bot():
                 status = "⭐" if has_subscription(user_id) else "🏠"
                 await upd(f"👤 ПРОФИЛЬ\n\nID: {user_id}\nЮзернейм: {username}\nСтатус: {status}\nЖалоб: {len(user_reports)}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                 return
-            
+
             if data == "developer":
                 await upd(f"👨‍💻 РАЗРАБОТЧИК\n\n{DEVELOPER_LINK}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                 return
-            
+
             if data == "history":
                 history = [r for r in load_data().get('reports', []) if r.get('user') == user_id]
                 if not history:
@@ -985,7 +882,7 @@ async def main_bot():
                     text += f"{i}. {r.get('target', '')} {status} {r.get('time', '')}\n"
                 await upd(text, [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                 return
-            
+
             if data == "back_to_start":
                 if has_subscription(user_id):
                     buttons = [
@@ -997,7 +894,7 @@ async def main_bot():
                 else:
                     await upd(f"🚫 ДОСТУП ЗАПРЕЩЁН\n\nДля покупки напишите:\n{DEVELOPER_LINK}")
                 return
-            
+
             if data == "mix_menu":
                 if not has_subscription(user_id):
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
@@ -1005,7 +902,7 @@ async def main_bot():
                 user_states[user_id] = 'waiting_mix_target'
                 await upd("📤 МИКС\n\nОтправь ссылку\n@username или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
-            
+
             if data == "telethon_report":
                 if not has_subscription(user_id):
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
@@ -1013,7 +910,7 @@ async def main_bot():
                 user_states[user_id] = 'waiting_telethon_target'
                 await upd("⚡ TELEHON\n\nОтправь ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
-            
+
             if data == "operator":
                 if not has_subscription(user_id):
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
@@ -1021,7 +918,7 @@ async def main_bot():
                 user_states[user_id] = 'waiting_operator_target'
                 await upd("👤 ОПЕРАТОР\n\nОтправь юзернейм\n@username или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
-            
+
             if data == "ai_analyze":
                 if not has_subscription(user_id):
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
@@ -1029,13 +926,13 @@ async def main_bot():
                 user_states[user_id] = 'waiting_ai_target'
                 await upd("🔍 AI-АНАЛИЗ\n\nОтправь ссылку\n@channel или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
-            
+
             if data == "mix_drugs_yes":
                 user_data[user_id]['drugs'] = 'yes'
                 user_states[user_id] = 'waiting_mix_description'
                 await upd("📝 ОПИСАНИЕ\n\nТип; Причина; Ссылки\nПример: Канал; продажа; https://t.me/x/12", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
-            
+
             if data == "mix_drugs_no":
                 user_data[user_id]['drugs'] = 'no'
                 user_states[user_id] = 'waiting_mix_description'
@@ -1074,12 +971,9 @@ async def main_bot():
                     target = text
                     user_states.pop(user_id, None)
                     await upd("⏳ Отправка Telethon...")
-                    
                     async def edit_callback(new_text):
                         await upd(new_text)
-                    
                     result = await send_telethon_report(user_id, target, edit_callback)
-                    
                     data = load_data()
                     data.setdefault('reports', []).append({
                         'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1089,7 +983,6 @@ async def main_bot():
                         'user': user_id
                     })
                     save_data(data)
-                    
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1100,12 +993,9 @@ async def main_bot():
                     username = text
                     user_states.pop(user_id, None)
                     await upd("⏳ Отправка оператору...")
-                    
                     async def edit_callback(new_text):
                         await upd(new_text)
-                    
                     result = await send_operator_report(user_id, username, edit_callback)
-                    
                     data = load_data()
                     data.setdefault('reports', []).append({
                         'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1115,7 +1005,6 @@ async def main_bot():
                         'user': user_id
                     })
                     save_data(data)
-                    
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
                     await upd("❌ Неверный юзернейм.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1125,30 +1014,24 @@ async def main_bot():
                 if 't.me/' in text or text.startswith('@'):
                     target = text
                     user_states.pop(user_id, None)
-                    await upd("⏳ Сканирование через Gemini...")
-                    
+                    await upd("⏳ Сканирование...")
                     analyzer = ContentAnalyzer()
                     result, error = await analyzer.analyze_target(target, None)
-                    
                     if error:
                         await upd(f"❌ {error}", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                         return
                     if not result:
                         await upd("❌ Нет сообщений", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                         return
-                    
-                    results = result["results"]
                     violation = result["violation"]
                     percent = result["percent"]
                     messages = result["messages"]
                     target_type = result["target_type"]
-                    
-                    report = f"🔍 AI-АНАЛИЗ (Gemini)\n\nЦель: {target}\nТип: {target_type.upper()}\nСообщений: {len(messages)}\n"
+                    report = f"🔍 AI-АНАЛИЗ\n\nЦель: {target}\nТип: {target_type.upper()}\nСообщений: {len(messages)}\n"
                     if violation:
                         report += f"⚠️ Нарушение: {violation.upper()} ({percent}%)\n❌ Найдено!"
                     else:
                         report += f"Нарушений: 0\n✅ Чисто"
-                    
                     await upd(report, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1161,23 +1044,17 @@ async def main_bot():
                 if not target:
                     await upd("❌ Ошибка", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                     return
-                
                 violation_desc = "distribution of illegal narcotics" if drugs == 'yes' else "violation of Telegram rules"
                 parts = description.split(';')
                 target_type = parts[0].strip() if len(parts) > 0 else "unknown"
                 evidence_links = parts[2].strip() if len(parts) > 2 else ""
-                
                 ai = PowerAI()
                 report_text = ai.generate_mix_text(target, target_type, violation_desc, evidence_links)
                 user_states.pop(user_id, None)
-                
                 await upd("⏳ Отправка микс-жалобы...")
-                
                 async def edit_callback(new_text):
                     await upd(new_text)
-                
                 result = await send_mix_report(user_id, target, report_text, edit_callback)
-                
                 data = load_data()
                 data.setdefault('reports', []).append({
                     'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1187,7 +1064,6 @@ async def main_bot():
                     'user': user_id
                 })
                 save_data(data)
-                
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
