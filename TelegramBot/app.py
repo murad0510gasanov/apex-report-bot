@@ -34,7 +34,7 @@ BOT_NAME = 'APEX REPORT'
 
 # ===== АДМИНЫ (ТОЛЬКО ТЫ) =====
 # ЗАМЕНИ 123456789 НА СВОЙ TELEGRAM ID
-ADMIN_IDS = [123456789]  # ← СЮДА СВОЙ ID
+ADMIN_IDS = [8701448954]  # ← СЮДА СВОЙ ID
 
 # ===== ПУТИ =====
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
