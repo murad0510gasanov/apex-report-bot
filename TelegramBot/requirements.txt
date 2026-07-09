@@ -1,4 +1,3 @@
 telethon
-matplotlib
+aiohttp
 requests
-fpdf
