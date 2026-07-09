@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ФИНАЛ)
+# app.py — APEX REPORT (ФИНАЛЬНЫЙ, РАБОЧИЙ)
 import os
 import sys
 import json
@@ -118,68 +118,6 @@ def has_subscription(user_id):
 def generate_phone():
     return f"+7{random.randint(1000000000, 9999999999)}"
 
-async def solve_captcha(api_key):
-    try:
-        async with aiohttp.ClientSession() as session:
-            session.headers.update({'User-Agent': 'Mozilla/5.0'})
-            async with session.get("https://telegram.org/support", timeout=10) as resp:
-                html = await resp.text()
-                match = re.search(r'data-sitekey=["\']([^"\']+)["\']', html)
-                if not match:
-                    return None, None
-                sitekey = match.group(1)
-
-            data = {
-                "key": api_key,
-                "method": "turnstile",
-                "sitekey": sitekey,
-                "pageurl": "https://telegram.org/support",
-                "json": 1
-            }
-            async with session.post("http://rucaptcha.com/in.php", data=data, timeout=15) as resp:
-                res = await resp.json()
-                if res.get("status") != 1:
-                    return None, None
-                captcha_id = res.get("request")
-
-            for _ in range(5):
-                await asyncio.sleep(2)
-                async with session.get(f"http://rucaptcha.com/res.php?key={api_key}&action=get&id={captcha_id}&json=1") as resp:
-                    data = await resp.json()
-                    if data.get("status") == 1:
-                        return data.get("request"), session
-                    elif "CAPCHA_NOT_READY" in str(data):
-                        continue
-                    else:
-                        return None, None
-            return None, None
-    except:
-        return None, None
-
-async def send_web_report(api_key, name, phone, text):
-    token, session = await solve_captcha(api_key)
-    if not token or not session:
-        return False, "Капча не решена"
-    headers = {
-        'User-Agent': 'Mozilla/5.0',
-        'Content-Type': 'application/x-www-form-urlencoded',
-    }
-    data = {
-        'name': name,
-        'email': "sms@telegram.org",
-        'phone': phone,
-        'msg': text,
-        'cf-turnstile-response': token
-    }
-    try:
-        async with session.post("https://telegram.org/support", headers=headers, data=data, timeout=15) as r:
-            if r.status == 200:
-                return True, f"код: {r.status}"
-            else:
-                return False, f"код: {r.status}"
-    except:
-        return False, "ошибка"
-
 async def try_connect(session_path, timeout=15):
     client = None
     try:
@@ -227,22 +165,58 @@ async def get_live_session():
             return client
     return None
 
-# ===== ОПЕРАТОР (С КАПЧЕЙ) =====
+# ===== ОПЕРАТОР (ЧЕРЕЗ TELEGRAM API, БЕЗ КАПЧИ) =====
 async def send_operator_report(user_id, username, edit_callback=None):
-    phone = generate_phone()
-    name = "Operator Report"
-    text = f"Complaint against drug shop operator: {username}"
-    success, msg = await send_web_report(RUCAPTCHA_API_KEY, name, phone, text)
-    if success:
-        result = f"✅ Оператор {username} — жалоба отправлена"
+    try:
+        client = await get_live_session()
+        if not client:
+            result = "❌ Нет живых сессий"
+            if edit_callback:
+                await edit_callback(result)
+            return result
+
+        username = username.replace('https://t.me/', '').replace('@', '')
+        
         try:
-            async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
-                channel = await temp_client.get_entity(CHANNEL_ID)
-                await temp_client.send_message(channel, f"✅ Оператор {username} — жалоба отправлена")
-        except:
-            pass
-    else:
-        result = f"❌ Оператор {username}: {msg}"
+            entity = await client.get_entity(f"@{username}")
+        except UsernameNotOccupiedError:
+            await client.disconnect()
+            result = f"❌ Оператор @{username} не найден"
+            if edit_callback:
+                await edit_callback(result)
+            return result
+        except Exception as e:
+            await client.disconnect()
+            result = f"❌ Ошибка: {str(e)[:50]}"
+            if edit_callback:
+                await edit_callback(result)
+            return result
+
+        try:
+            await client(ReportPeerRequest(
+                peer=entity,
+                reason=InputReportReasonSpam(),
+                message="Spam and violation of Telegram Terms of Service"
+            ))
+            result = f"✅ Жалоба на @{username} отправлена"
+            
+            try:
+                async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
+                    channel = await temp_client.get_entity(CHANNEL_ID)
+                    await temp_client.send_message(channel, f"✅ Оператор @{username} — жалоба отправлена")
+            except:
+                pass
+                
+        except FloodWaitError as e:
+            result = f"⏳ FloodWait {e.seconds} сек"
+        except Exception as e:
+            result = f"❌ Ошибка: {str(e)[:50]}"
+        finally:
+            await client.disconnect()
+
+    except Exception as e:
+        result = f"❌ Ошибка: {str(e)[:50]}"
+
     if edit_callback:
         await edit_callback(result)
     return result
@@ -555,6 +529,15 @@ class ContentAnalyzer:
             "fio": r'[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+'
         }
 
+    def check_violation(self, text):
+        """Проверяет одно сообщение на наличие ключевых слов"""
+        text_lower = text.lower()
+        for category, words in self.keywords.items():
+            for word in words:
+                if word in text_lower:
+                    return True
+        return False
+
     def analyze_text(self, text):
         text_lower = text.lower()
         results = {}
@@ -592,22 +575,26 @@ class ContentAnalyzer:
 
         messages = []
         target_type = "unknown"
+        violation_messages = []
+        chat_username = ""
 
         try:
             if 't.me/' in target:
-                username = target.replace('https://t.me/', '').split('/')[0]
-                entity = await client.get_entity(f"@{username}")
+                chat_username = target.replace('https://t.me/', '').split('/')[0]
+                entity = await client.get_entity(f"@{chat_username}")
                 target_type = "канал"
             elif target.startswith('@'):
+                chat_username = target.replace('@', '')
                 entity = await client.get_entity(target)
                 target_type = "бот" if entity.bot else "пользователь"
             else:
                 await client.disconnect()
                 return None, "Неверная ссылка"
 
+            # ПОДПИСКА (для закрытых каналов)
             try:
                 await client(JoinChannelRequest(entity))
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
             except:
                 pass
 
@@ -615,6 +602,8 @@ class ContentAnalyzer:
             for m in msgs:
                 if m and m.text:
                     messages.append(m.text)
+                    if self.check_violation(m.text):
+                        violation_messages.append(m.id)
 
         except Exception as e:
             await client.disconnect()
@@ -628,26 +617,37 @@ class ContentAnalyzer:
         results = self.analyze_messages(messages)
         violation, percent = self.get_violation(results)
 
+        # Формируем ссылки
+        links = []
+        if violation and chat_username:
+            for msg_id in violation_messages[:5]:
+                links.append(f"https://t.me/{chat_username}/{msg_id}")
+
         result = {
             "results": results,
             "violation": violation,
             "percent": percent,
             "messages": messages,
             "target_type": target_type,
-            "count": len(messages)
+            "count": len(messages),
+            "links": links
         }
 
         if violation:
             try:
                 async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
                     channel = await temp_client.get_entity(CHANNEL_ID)
-                    await temp_client.send_message(channel,
+                    report_text = (
                         f"🔍 AI Анализ: {target}\n"
                         f"Тип: {target_type.upper()}\n"
                         f"⚠️ Нарушение: {violation.upper()} ({percent}%)\n"
                         f"📊 Сообщений: {len(messages)}\n"
-                        f"❌ Найдено нарушение!"
                     )
+                    if links:
+                        report_text += f"🔗 Ссылки на нарушения:\n" + "\n".join(links)
+                    else:
+                        report_text += "❌ Найдено нарушение!"
+                    await temp_client.send_message(channel, report_text)
             except:
                 pass
 
@@ -992,7 +992,7 @@ async def main_bot():
                         'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'target': username,
                         'type': 'Оператор',
-                        'destination': 'Веб-метод',
+                        'destination': 'Telegram API',
                         'user': user_id
                     })
                     save_data(data)
@@ -1014,15 +1014,21 @@ async def main_bot():
                     if not result:
                         await upd("❌ Нет сообщений", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                         return
-                    violation = result["violation"]
-                    percent = result["percent"]
-                    messages = result["messages"]
-                    target_type = result["target_type"]
+                    
+                    violation = result.get("violation")
+                    percent = result.get("percent")
+                    messages = result.get("messages")
+                    target_type = result.get("target_type")
+                    links = result.get("links", [])
+                    
                     report = f"🔍 AI-АНАЛИЗ\n\nЦель: {target}\nТип: {target_type.upper()}\nСообщений: {len(messages)}\n"
                     if violation:
                         report += f"⚠️ Нарушение: {violation.upper()} ({percent}%)\n❌ Найдено!"
+                        if links:
+                            report += "\n🔗 Ссылки:\n" + "\n".join(links)
                     else:
                         report += f"Нарушений: 0\n✅ Чисто"
+                    
                     await upd(report, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
