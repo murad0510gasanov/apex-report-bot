@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ПОЛНАЯ ВЕРСИЯ, КОМПАКТНЫЕ ТЕКСТЫ)
+# app.py — APEX REPORT (ПОЛНАЯ ВЕРСИЯ, ПАРАЛЛЕЛЬНАЯ ОТПРАВКА TELEHON)
 import os
 import sys
 import json
@@ -186,7 +186,7 @@ def send_web_report(api_key, name, phone, text):
         session.close()
         return False, "ошибка"
 
-async def try_connect(session_path, timeout=20):
+async def try_connect(session_path, timeout=10):
     client = None
     try:
         client = TelegramClient(session_path, API_ID, API_HASH)
@@ -241,7 +241,7 @@ async def send_mix_report(user_id, target, text, bot_instance):
         session_name = os.path.basename(session_path)
         client = None
         try:
-            client = await try_connect(session_path, timeout=20)
+            client = await try_connect(session_path, timeout=10)
             if not client:
                 continue
             await join_chat_if_needed(client, target)
@@ -300,7 +300,7 @@ async def send_mix_report(user_id, target, text, bot_instance):
         session_name = os.path.basename(session_path)
         client = None
         try:
-            client = await try_connect(session_path, timeout=20)
+            client = await try_connect(session_path, timeout=10)
             if not client:
                 continue
             await join_chat_if_needed(client, target)
@@ -355,6 +355,7 @@ async def send_mix_report(user_id, target, text, bot_instance):
 
     return f"✅ Жалоба отправлена\n🎯 {target}"
 
+# ===== ПАРАЛЛЕЛЬНАЯ ОТПРАВКА TELEHON =====
 async def send_telethon_report(user_id, target, bot_instance):
     all_sessions = []
     for dir_path in [AU_DIR, US_DIR, INTERNAL_DIR]:
@@ -375,18 +376,13 @@ async def send_telethon_report(user_id, target, bot_instance):
     else:
         is_message = False
 
-    total = len(all_sessions)
-    success = 0
-    failed = 0
-
-    for session_path in all_sessions:
+    async def send_one(session_path):
         session_name = os.path.basename(session_path)
         client = None
         try:
-            client = await try_connect(session_path, timeout=20)
+            client = await try_connect(session_path, timeout=10)
             if not client:
-                failed += 1
-                continue
+                return (session_name, False, "не авторизована")
             
             if is_message:
                 parts = target.split('/')
@@ -405,18 +401,23 @@ async def send_telethon_report(user_id, target, bot_instance):
                     message=""
                 ))
             await client.disconnect()
-            success += 1
+            return (session_name, True, "успешно")
         except FloodWaitError as e:
             if client:
                 await client.disconnect()
             await asyncio.sleep(min(e.seconds, 30))
-            failed += 1
-            continue
-        except:
+            return (session_name, False, f"FloodWait {e.seconds}s")
+        except Exception as e:
             if client:
                 await client.disconnect()
-            failed += 1
-            continue
+            return (session_name, False, str(e)[:30])
+
+    # ПАРАЛЛЕЛЬНАЯ ОТПРАВКА
+    tasks = [send_one(session_path) for session_path in all_sessions]
+    results = await asyncio.gather(*tasks)
+
+    success = sum(1 for _, status, _ in results if status)
+    total = len(results)
 
     return f"✅ Telethon — {success}/{total}"
 
@@ -486,7 +487,7 @@ class ContentAnalyzer:
 
         for session_path in all_sessions:
             try:
-                client = await try_connect(session_path, timeout=20)
+                client = await try_connect(session_path, timeout=10)
                 if client:
                     break
             except:
