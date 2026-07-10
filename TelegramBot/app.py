@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ПОЛНАЯ ПЕРЕПИСАННАЯ ВЕРСИЯ)
+# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ)
 import os
 import sys
 import json
@@ -26,7 +26,6 @@ API_ID = 21826549
 API_HASH = 'c1a19f792cfd9e397200d16c7e448160'
 BOT_TOKEN = '8870668741:AAHL2cO1BWoHau-bVmBLziMadDj94SnU7IA'
 CHANNEL_ID = -1004489395750
-RUCAPTCHA_API_KEY = 'a2e1b40a756ccc16c11ede55eb2c6567'
 SUBSCRIPTION_BOT_TOKEN = '8238807176:AAFBRezNnlRiJ3oE-D81aOQGJ8NvJzBGBiU'
 DEVELOPER_LINK = 'https://t.me/cazlen'
 BOT_NAME = 'APEX REPORT'
@@ -118,17 +117,33 @@ def has_subscription(user_id):
 def generate_phone():
     return f"+7{random.randint(1000000000, 9999999999)}"
 
-async def try_connect(session_path, timeout=20):
-    client = None
-    try:
-        client = TelegramClient(session_path, API_ID, API_HASH)
-        await asyncio.wait_for(client.start(), timeout=timeout)
-        await asyncio.wait_for(client.get_me(), timeout=timeout)
-        return client
-    except:
-        if client:
-            await client.disconnect()
-        return None
+async def try_connect(session_path, timeout=20, retries=3):
+    for attempt in range(retries):
+        client = None
+        try:
+            if attempt > 0:
+                await asyncio.sleep(2)
+            client = TelegramClient(session_path, API_ID, API_HASH)
+            await asyncio.wait_for(client.start(), timeout=timeout)
+            await asyncio.wait_for(client.get_me(), timeout=timeout)
+            return client
+        except asyncio.TimeoutError:
+            if client:
+                await client.disconnect()
+            if attempt == retries - 1:
+                return None
+        except FloodWaitError as e:
+            if client:
+                await client.disconnect()
+            await asyncio.sleep(min(e.seconds, 30))
+            if attempt == retries - 1:
+                return None
+        except Exception:
+            if client:
+                await client.disconnect()
+            if attempt == retries - 1:
+                return None
+    return None
 
 async def join_chat_if_needed(client, target):
     try:
@@ -160,12 +175,12 @@ async def get_live_session():
     if not all_sessions:
         return None
     for session_path in all_sessions:
-        client = await try_connect(session_path, timeout=10)
+        client = await try_connect(session_path, timeout=10, retries=1)
         if client:
             return client
     return None
 
-# ===== ОПЕРАТОР (ЧЕРЕЗ TELEGRAM API, БЕЗ КАПЧИ) =====
+# ===== ОПЕРАТОР (ЧЕРЕЗ TELEGRAM API) =====
 async def send_operator_report(user_id, username, edit_callback=None):
     try:
         client = await get_live_session()
@@ -221,7 +236,7 @@ async def send_operator_report(user_id, username, edit_callback=None):
         await edit_callback(result)
     return result
 
-# ===== ТЕЛЕТОН (ПЕРЕПИСАННЫЙ, С ПОВТОРНЫМИ ПОПЫТКАМИ) =====
+# ===== ТЕЛЕТОН =====
 async def send_telethon_report(user_id, target, edit_callback=None):
     all_sessions = get_all_sessions()
     if not all_sessions:
@@ -233,7 +248,6 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             await edit_callback("❌ Неверная ссылка")
         return "❌ Неверная ссылка"
 
-    # Парсим цель
     message_link_pattern = r'https://t\.me/([^/]+)/(\d+)'
     match = re.search(message_link_pattern, target)
     if match:
@@ -251,105 +265,75 @@ async def send_telethon_report(user_id, target, edit_callback=None):
     total = len(all_sessions)
     errors = 0
     error_details = []
+    success_count = 0
 
     async def send_one(session_path, index):
-        nonlocal errors, error_details
+        nonlocal errors, success_count
         session_name = os.path.basename(session_path)
-        client = None
-        success = False
-        
-        # ПЫТАЕМСЯ 2 РАЗА
-        for attempt in range(2):
-            try:
-                # Подключаемся с увеличенным таймаутом
-                client = await try_connect(session_path, timeout=20)
-                if not client:
-                    if attempt == 1:
-                        errors += 1
-                        error_details.append(f"{session_name}: не удалось подключиться")
-                    continue
-                
-                # Получаем сущность и отправляем жалобу
-                if is_message:
-                    try:
-                        chat = await client.get_entity(chat_username)
-                        await client(ReportPeerRequest(peer=chat, reason=InputReportReasonSpam(), message=""))
-                        print(f"[{session_name}] ✅ Успешно (попытка {attempt+1})")
-                        success = True
-                        break
-                    except UsernameNotOccupiedError:
-                        if attempt == 1:
-                            errors += 1
-                            error_details.append(f"{session_name}: канал не найден")
-                    except FloodWaitError as e:
-                        if attempt == 1:
-                            errors += 1
-                            error_details.append(f"{session_name}: FloodWait {e.seconds}s")
-                        await asyncio.sleep(min(e.seconds, 30))
-                    except Exception as e:
-                        if attempt == 1:
-                            errors += 1
-                            error_details.append(f"{session_name}: {str(e)[:50]}")
-                else:
-                    try:
-                        entity = await client.get_entity(target)
-                        await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
-                        print(f"[{session_name}] ✅ Успешно (попытка {attempt+1})")
-                        success = True
-                        break
-                    except UsernameNotOccupiedError:
-                        if attempt == 1:
-                            errors += 1
-                            error_details.append(f"{session_name}: цель не найдена")
-                    except FloodWaitError as e:
-                        if attempt == 1:
-                            errors += 1
-                            error_details.append(f"{session_name}: FloodWait {e.seconds}s")
-                        await asyncio.sleep(min(e.seconds, 30))
-                    except Exception as e:
-                        if attempt == 1:
-                            errors += 1
-                            error_details.append(f"{session_name}: {str(e)[:50]}")
-            except Exception as e:
-                if attempt == 1:
+        client = await try_connect(session_path, timeout=20, retries=3)
+        if not client:
+            errors += 1
+            error_details.append(f"{session_name}: не удалось подключиться")
+            return
+
+        try:
+            if is_message:
+                try:
+                    chat = await client.get_entity(chat_username)
+                    await client(ReportPeerRequest(peer=chat, reason=InputReportReasonSpam(), message=""))
+                    success_count += 1
+                    print(f"[{session_name}] ✅ Успешно")
+                except UsernameNotOccupiedError:
+                    errors += 1
+                    error_details.append(f"{session_name}: канал не найден")
+                except FloodWaitError as e:
+                    errors += 1
+                    error_details.append(f"{session_name}: FloodWait {e.seconds}s")
+                    await asyncio.sleep(min(e.seconds, 30))
+                except Exception as e:
                     errors += 1
                     error_details.append(f"{session_name}: {str(e)[:50]}")
-            finally:
-                if client:
-                    await client.disconnect()
-                    client = None
-                # Ждём между попытками
-                if not success:
-                    await asyncio.sleep(2)
+            else:
+                try:
+                    entity = await client.get_entity(target)
+                    await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
+                    success_count += 1
+                    print(f"[{session_name}] ✅ Успешно")
+                except UsernameNotOccupiedError:
+                    errors += 1
+                    error_details.append(f"{session_name}: цель не найдена")
+                except FloodWaitError as e:
+                    errors += 1
+                    error_details.append(f"{session_name}: FloodWait {e.seconds}s")
+                    await asyncio.sleep(min(e.seconds, 30))
+                except Exception as e:
+                    errors += 1
+                    error_details.append(f"{session_name}: {str(e)[:50]}")
+        finally:
+            await client.disconnect()
 
-        if not success:
-            print(f"[{session_name}] ❌ Не удалось после 2 попыток")
-
-    # Запускаем все сессии параллельно
     tasks = [send_one(session_path, i+1) for i, session_path in enumerate(all_sessions)]
     await asyncio.gather(*tasks)
 
-    # Выводим детали ошибок
     for detail in error_details:
         print(f"[ERROR] {detail}")
 
-    result = "✅ Telethon — ОТПРАВЛЕНО"
+    result = f"✅ Telethon — ОТПРАВЛЕНО ({success_count}/{total})"
     if errors > 0:
         result += f"\n⚠️ Ошибок: {errors}"
 
-    # Отправляем в канал
     try:
         async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
             channel = await temp_client.get_entity(CHANNEL_ID)
-            await temp_client.send_message(channel, f"✅ Telethon репорт на {target}\nОшибок: {errors}")
-    except Exception as e:
-        print(f"[ERROR] Не удалось отправить в канал: {e}")
+            await temp_client.send_message(channel, f"✅ Telethon репорт на {target}\nУспешно: {success_count}/{total}\nОшибок: {errors}")
+    except:
+        pass
 
     if edit_callback:
         await edit_callback(result)
     return result
 
-# ===== ОТПРАВКА МИКС (ТОЛЬКО AU + US) =====
+# ===== МИКС (ТОЛЬКО AU + US) =====
 async def send_mix_report(user_id, target, text, edit_callback=None):
     all_sessions = []
     if os.path.exists(AU_DIR):
@@ -376,11 +360,10 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         if edit_callback:
             await edit_callback(f"⏳ Отправка микс-жалобы... ({current}/{total})")
         session_name = os.path.basename(session_path)
-        client = None
+        client = await try_connect(session_path, timeout=15, retries=2)
+        if not client:
+            continue
         try:
-            client = await try_connect(session_path, timeout=15)
-            if not client:
-                continue
             await join_chat_if_needed(client, target)
             await client.send_message('@AUReportBot', '/start')
             await asyncio.sleep(2)
@@ -427,19 +410,17 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         except Exception as e:
             print(f"[AU] {session_name} ошибка: {e}")
         finally:
-            if client:
-                await client.disconnect()
+            await client.disconnect()
 
     for session_path in us_sessions:
         current += 1
         if edit_callback:
             await edit_callback(f"⏳ Отправка микс-жалобы... ({current}/{total})")
         session_name = os.path.basename(session_path)
-        client = None
+        client = await try_connect(session_path, timeout=15, retries=2)
+        if not client:
+            continue
         try:
-            client = await try_connect(session_path, timeout=15)
-            if not client:
-                continue
             await join_chat_if_needed(client, target)
             await client.send_message('@TIDABot', '/start')
             await asyncio.sleep(2)
@@ -486,21 +467,20 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         except Exception as e:
             print(f"[US] {session_name} ошибка: {e}")
         finally:
-            if client:
-                await client.disconnect()
+            await client.disconnect()
 
     try:
         async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
             channel = await temp_client.get_entity(CHANNEL_ID)
             await temp_client.send_message(channel, f"✅ Микс-жалоба отправлена на {target}")
-    except Exception as e:
-        print(f"[ERROR] Не удалось отправить в канал: {e}")
+    except:
+        pass
 
     if edit_callback:
         await edit_callback("✅ Микс-жалоба отправлена!")
     return "✅ Микс-жалоба отправлена!"
 
-# ===== КЛАСС ДЛЯ ГЕНЕРАЦИИ ТЕКСТА МИКСА =====
+# ===== ГЕНЕРАЦИЯ ТЕКСТА МИКСА =====
 class PowerAI:
     def generate_mix_text(self, target, target_type, violation_desc, evidence_links=""):
         variants = [
@@ -1067,20 +1047,27 @@ async def main_bot():
                 description = text
                 target = user_data.get(user_id, {}).get('target')
                 drugs = user_data.get(user_id, {}).get('drugs', 'no')
+                
                 if not target:
-                    await upd("❌ Ошибка", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    await upd("❌ Ошибка: цель не найдена", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                     return
+                
                 violation_desc = "distribution of illegal narcotics" if drugs == 'yes' else "violation of Telegram rules"
                 parts = description.split(';')
                 target_type = parts[0].strip() if len(parts) > 0 else "unknown"
                 evidence_links = parts[2].strip() if len(parts) > 2 else ""
+                
                 ai = PowerAI()
                 report_text = ai.generate_mix_text(target, target_type, violation_desc, evidence_links)
+                
                 user_states.pop(user_id, None)
                 await upd("⏳ Отправка микс-жалобы...")
+                
                 async def edit_callback(new_text):
                     await upd(new_text)
+                
                 result = await send_mix_report(user_id, target, report_text, edit_callback)
+                
                 data = load_data()
                 data.setdefault('reports', []).append({
                     'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1090,6 +1077,7 @@ async def main_bot():
                     'user': user_id
                 })
                 save_data(data)
+                
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
