@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ИСПРАВЛЕННЫЙ, РАБОТАЕТ С ПРИГЛАСИТЕЛЬНЫМИ ССЫЛКАМИ)
+# app.py — ФИНАЛЬНЫЙ РАБОЧИЙ КОД
 import os
 import sys
 import json
@@ -19,7 +19,6 @@ try:
 except ImportError:
     TELEGRAM_AVAILABLE = False
 
-# ===== ТВОИ ДАННЫЕ =====
 API_ID = 21826549
 API_HASH = 'c1a19f792cfd9e397200d16c7e448160'
 BOT_TOKEN = '8870668741:AAHL2cO1BWoHau-bVmBLziMadDj94SnU7IA'
@@ -29,7 +28,6 @@ DEVELOPER_LINK = 'https://t.me/cazlen'
 BOT_NAME = 'APEX REPORT'
 ADMIN_IDS = [8701448954]
 
-# ===== ПУТИ =====
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSIONS_DIR = os.path.join(BASE_DIR, 'sessions')
 os.makedirs(SESSIONS_DIR, exist_ok=True)
@@ -45,11 +43,9 @@ LOG_FILE = os.path.join(BASE_DIR, 'bot_analytics.json')
 SUBS_FILE = os.path.join(BASE_DIR, 'subscriptions.json')
 REQUESTS_FILE = os.path.join(BASE_DIR, 'requests.json')
 
-# ===== КЕШ ПОДПИСОК =====
 _subs_cache = {}
 _subs_cache_time = 0
 
-# ===== РАБОТА С ДАННЫМИ =====
 def load_data():
     if os.path.exists(LOG_FILE):
         try:
@@ -115,7 +111,6 @@ def has_subscription(user_id):
 def generate_phone():
     return f"+7{random.randint(1000000000, 9999999999)}"
 
-# ===== ПОДКЛЮЧЕНИЕ =====
 async def try_connect(session_path, timeout=20, retries=3):
     session_name = os.path.basename(session_path)
     for attempt in range(retries):
@@ -194,7 +189,6 @@ async def get_live_session():
             return client
     return None
 
-# ===== ОПЕРАТОР =====
 async def send_operator_report(user_id, username, edit_callback=None):
     try:
         client = await get_live_session()
@@ -250,7 +244,6 @@ async def send_operator_report(user_id, username, edit_callback=None):
         await edit_callback(result)
     return result
 
-# ===== ТЕЛЕТОН =====
 async def send_telethon_report(user_id, target, edit_callback=None):
     all_sessions = get_all_sessions()
     if not all_sessions:
@@ -348,7 +341,6 @@ async def send_telethon_report(user_id, target, edit_callback=None):
         await edit_callback(result)
     return result
 
-# ===== МИКС =====
 async def send_mix_report(user_id, target, text, edit_callback=None):
     all_sessions = []
     if os.path.exists(AU_DIR):
@@ -502,11 +494,9 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         await edit_callback("✅ Микс-жалоба отправлена!")
     return "✅ Микс-жалоба отправлена!"
 
-# ===== ГЕНЕРАЦИЯ ТЕКСТА ЖАЛОБЫ (ФОЛБЭК) =====
 async def generate_complaint_text(violation, explanation, links, target):
     return f"URGENT REPORT — TELEGRAM TERMS OF SERVICE VIOLATION.\nTarget: {target}\nViolation: {violation}\nExplanation: {explanation}\nLinks: {', '.join(links)}"
 
-# ===== AI-АНАЛИЗ (ТОЛЬКО ФОЛБЭК) =====
 class ContentAnalyzer:
     def __init__(self):
         self.last_result = None
@@ -595,46 +585,25 @@ class ContentAnalyzer:
         message_ids = []
 
         try:
-            # Если это пригласительная ссылка — пробуем присоединиться
-            if 't.me/joinchat' in target or 't.me/+' in target:
-                try:
-                    await client.join_channel(target)
-                    print(f"[JOIN] Присоединился по ссылке: {target}")
-                    await asyncio.sleep(3)
-                    # После присоединения получаем сущность
+            # ПРОСТО ПОЛУЧАЕМ СУЩНОСТЬ
+            if 't.me/' in target:
+                if 'joinchat' in target or '+' in target:
                     entity = await client.get_entity(target)
                     chat_username = getattr(entity, 'username', 'unknown')
                     target_type = "канал"
-                except Exception as e:
-                    # Если не удалось присоединиться — просто пробуем получить сущность
-                    print(f"[JOIN] Не удалось присоединиться: {e}")
-                    try:
-                        entity = await client.get_entity(target)
-                        chat_username = getattr(entity, 'username', 'unknown')
-                        target_type = "канал"
-                    except:
-                        await client.disconnect()
-                        return None, f"Не удалось получить доступ к каналу: {str(e)[:50]}"
-            else:
-                # Обычная ссылка
-                if 't.me/' in target:
-                    if 'joinchat' not in target and '+' not in target:
-                        chat_username = target.replace('https://t.me/', '').split('/')[0]
-                        entity = await client.get_entity(f"@{chat_username}")
-                        target_type = "канал"
-                    else:
-                        entity = await client.get_entity(target)
-                        chat_username = getattr(entity, 'username', 'unknown')
-                        target_type = "канал"
-                elif target.startswith('@'):
-                    chat_username = target.replace('@', '')
-                    entity = await client.get_entity(target)
-                    target_type = "бот" if entity.bot else "пользователь"
                 else:
-                    await client.disconnect()
-                    return None, "Неверная ссылка"
+                    chat_username = target.replace('https://t.me/', '').split('/')[0]
+                    entity = await client.get_entity(f"@{chat_username}")
+                    target_type = "канал"
+            elif target.startswith('@'):
+                chat_username = target.replace('@', '')
+                entity = await client.get_entity(target)
+                target_type = "бот" if entity.bot else "пользователь"
+            else:
+                await client.disconnect()
+                return None, "Неверная ссылка"
 
-            # Попытка подписаться (если ещё не подписан)
+            # ПЫТАЕМСЯ ПОДПИСАТЬСЯ (ЕСЛИ НЕ ПОЛУЧИТСЯ — ПРОСТО ИДЁМ ДАЛЬШЕ)
             try:
                 await client(JoinChannelRequest(entity))
                 print(f"[JOIN] Подписался на {chat_username}")
@@ -644,26 +613,22 @@ class ContentAnalyzer:
                     await client.send_message(entity, "Заявка на вступление")
                     print(f"[JOIN] Отправлена заявка в {chat_username}")
                     await client.disconnect()
-                    return None, f"🔒 Канал {chat_username} закрытый. Отправлена заявка на вступление. Подождите, пока вас примут, затем повторите анализ."
+                    return None, f"🔒 Канал {chat_username} закрытый. Отправлена заявка. Повторите анализ после одобрения."
                 except Exception as e:
-                    await client.disconnect()
-                    return None, f"Ошибка при отправке заявки: {str(e)[:50]}"
+                    print(f"[JOIN] Ошибка заявки: {e}")
             except Exception as e:
-                # Если ошибка — возможно, уже подписан
                 print(f"[JOIN] Ошибка подписки: {e}")
 
-            if target_type == "бот":
-                try:
-                    await client.send_message(entity, '/start')
-                    await asyncio.sleep(2)
-                except:
-                    pass
-
-            msgs = await client.get_messages(entity, limit=50)
-            for m in msgs:
-                if m and m.text:
-                    messages.append(m.text)
-                    message_ids.append(m.id)
+            # ЧИТАЕМ СООБЩЕНИЯ
+            try:
+                msgs = await client.get_messages(entity, limit=50)
+                for m in msgs:
+                    if m and m.text:
+                        messages.append(m.text)
+                        message_ids.append(m.id)
+            except Exception as e:
+                await client.disconnect()
+                return None, f"Не удалось прочитать сообщения: {str(e)[:50]}"
 
         except Exception as e:
             await client.disconnect()
@@ -726,7 +691,6 @@ class ContentAnalyzer:
         self.last_result = result
         return result
 
-# ===== ВТОРОЙ БОТ (ПОДПИСКИ) =====
 async def run_subscription_bot():
     try:
         print("[SUB-BOT] Запуск...")
@@ -858,7 +822,6 @@ async def run_subscription_bot():
     except Exception as e:
         print(f"[SUB-BOT] Ошибка: {e}")
 
-# ===== ГЛАВНЫЙ БОТ =====
 async def main_bot():
     try:
         bot = TelegramClient('bot_session', API_ID, API_HASH)
@@ -1111,9 +1074,7 @@ async def main_bot():
                 return
 
             if state == 'waiting_ai_target':
-                # Проверяем, является ли ссылка ссылкой на сообщение
                 if 't.me/' in text and '/' in text.replace('https://t.me/', '') and len(text.replace('https://t.me/', '').split('/')) >= 2:
-                    # Это ссылка на сообщение
                     link = text
                     parts = link.replace('https://t.me/', '').split('/')
                     if len(parts) >= 2:
@@ -1167,7 +1128,6 @@ async def main_bot():
                     else:
                         await upd("❌ Неверная ссылка на сообщение.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 elif 't.me/' in text or text.startswith('@'):
-                    # Это ссылка на канал/чат
                     target = text
                     user_states.pop(user_id, None)
                     if user_id not in user_data:
@@ -1273,7 +1233,6 @@ async def main_bot():
     except Exception as e:
         print(f"Error: {e}")
 
-# ===== ЗАПУСК =====
 async def main():
     main_task = asyncio.create_task(main_bot())
     sub_task = asyncio.create_task(run_subscription_bot())
