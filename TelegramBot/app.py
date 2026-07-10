@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ, ИСПРАВЛЕННАЯ)
+# app.py — APEX REPORT (ИСПРАВЛЕННЫЙ, РАБОТАЕТ С ПРИГЛАСИТЕЛЬНЫМИ ССЫЛКАМИ)
 import os
 import sys
 import json
@@ -152,17 +152,15 @@ async def try_connect(session_path, timeout=20, retries=3):
 
 async def join_chat_if_needed(client, target):
     try:
-        # Обработка пригласительных ссылок
         if 't.me/joinchat' in target or 't.me/+' in target:
             try:
                 await client.join_channel(target)
                 print(f"[JOIN] Успешно присоединился по ссылке: {target}")
                 return True
             except Exception as e:
-                print(f"[JOIN] Ошибка присоединения по ссылке: {e}")
+                print(f"[JOIN] Не удалось присоединиться по ссылке: {e}")
                 return False
         
-        # Обычные ссылки
         entity = await client.get_entity(target)
         if hasattr(entity, 'username') and entity.username:
             try:
@@ -195,22 +193,6 @@ async def get_live_session():
         if client:
             return client
     return None
-
-async def wait_for_join_approval(client, entity, timeout=30):
-    """Ждёт, пока заявка на вступление будет одобрена"""
-    print(f"[JOIN] Ожидание одобрения заявки... ({timeout} сек)")
-    for _ in range(timeout // 3):
-        await asyncio.sleep(3)
-        try:
-            # Пробуем получить сообщения из канала — если получается, значит приняли
-            msgs = await client.get_messages(entity, limit=1)
-            if msgs:
-                print(f"[JOIN] ✅ Заявка одобрена!")
-                return True
-        except:
-            continue
-    print(f"[JOIN] ❌ Заявка не одобрена за {timeout} сек")
-    return False
 
 # ===== ОПЕРАТОР =====
 async def send_operator_report(user_id, username, edit_callback=None):
@@ -610,45 +592,54 @@ class ContentAnalyzer:
         messages = []
         target_type = "unknown"
         chat_username = ""
-        message_ids = []  # ← реальные ID сообщений
+        message_ids = []
 
         try:
-            # Обработка пригласительных ссылок
+            # Если это пригласительная ссылка — пробуем присоединиться
             if 't.me/joinchat' in target or 't.me/+' in target:
                 try:
                     await client.join_channel(target)
-                    print(f"[JOIN] Присоединился по ссылке")
+                    print(f"[JOIN] Присоединился по ссылке: {target}")
                     await asyncio.sleep(3)
-                except Exception as e:
-                    await client.disconnect()
-                    return None, f"Не удалось присоединиться по ссылке: {str(e)[:50]}"
-
-            # Получение сущности
-            if 't.me/' in target:
-                if 'joinchat' not in target and '+' not in target:
-                    chat_username = target.replace('https://t.me/', '').split('/')[0]
-                    entity = await client.get_entity(f"@{chat_username}")
-                    target_type = "канал"
-                else:
-                    # для пригласительных ссылок нужно получить сущность по ссылке
+                    # После присоединения получаем сущность
                     entity = await client.get_entity(target)
                     chat_username = getattr(entity, 'username', 'unknown')
                     target_type = "канал"
-            elif target.startswith('@'):
-                chat_username = target.replace('@', '')
-                entity = await client.get_entity(target)
-                target_type = "бот" if entity.bot else "пользователь"
+                except Exception as e:
+                    # Если не удалось присоединиться — просто пробуем получить сущность
+                    print(f"[JOIN] Не удалось присоединиться: {e}")
+                    try:
+                        entity = await client.get_entity(target)
+                        chat_username = getattr(entity, 'username', 'unknown')
+                        target_type = "канал"
+                    except:
+                        await client.disconnect()
+                        return None, f"Не удалось получить доступ к каналу: {str(e)[:50]}"
             else:
-                await client.disconnect()
-                return None, "Неверная ссылка"
+                # Обычная ссылка
+                if 't.me/' in target:
+                    if 'joinchat' not in target and '+' not in target:
+                        chat_username = target.replace('https://t.me/', '').split('/')[0]
+                        entity = await client.get_entity(f"@{chat_username}")
+                        target_type = "канал"
+                    else:
+                        entity = await client.get_entity(target)
+                        chat_username = getattr(entity, 'username', 'unknown')
+                        target_type = "канал"
+                elif target.startswith('@'):
+                    chat_username = target.replace('@', '')
+                    entity = await client.get_entity(target)
+                    target_type = "бот" if entity.bot else "пользователь"
+                else:
+                    await client.disconnect()
+                    return None, "Неверная ссылка"
 
-            # Подписка на канал
+            # Попытка подписаться (если ещё не подписан)
             try:
                 await client(JoinChannelRequest(entity))
                 print(f"[JOIN] Подписался на {chat_username}")
                 await asyncio.sleep(3)
             except ChannelPrivateError:
-                # Канал закрытый — отправляем заявку
                 try:
                     await client.send_message(entity, "Заявка на вступление")
                     print(f"[JOIN] Отправлена заявка в {chat_username}")
@@ -658,15 +649,8 @@ class ContentAnalyzer:
                     await client.disconnect()
                     return None, f"Ошибка при отправке заявки: {str(e)[:50]}"
             except Exception as e:
-                # Если ошибка — пробуем отправить заявку
-                try:
-                    await client.send_message(entity, "Заявка на вступление")
-                    print(f"[JOIN] Отправлена заявка в {chat_username}")
-                    await client.disconnect()
-                    return None, f"🔒 Канал {chat_username} закрытый. Отправлена заявка на вступление. Подождите, пока вас примут, затем повторите анализ."
-                except:
-                    await client.disconnect()
-                    return None, f"Не удалось подписаться или отправить заявку: {str(e)[:50]}"
+                # Если ошибка — возможно, уже подписан
+                print(f"[JOIN] Ошибка подписки: {e}")
 
             if target_type == "бот":
                 try:
@@ -675,12 +659,11 @@ class ContentAnalyzer:
                 except:
                     pass
 
-            # Читаем сообщения с реальными ID
             msgs = await client.get_messages(entity, limit=50)
             for m in msgs:
                 if m and m.text:
                     messages.append(m.text)
-                    message_ids.append(m.id)  # ← сохраняем реальный ID
+                    message_ids.append(m.id)
 
         except Exception as e:
             await client.disconnect()
@@ -691,14 +674,12 @@ class ContentAnalyzer:
         if not messages:
             return None, "Нет сообщений"
 
-        # АНАЛИЗ ПО КЛЮЧЕВЫМ СЛОВАМ
         results = self.analyze_messages(messages)
         violation, percent = self.get_violation(results)
 
-        # ФОРМИРУЕМ ССЫЛКИ С РЕАЛЬНЫМИ ID
         links = []
         if violation and chat_username:
-            for idx, msg_id in enumerate(message_ids[:5]):  # первые 5 нарушений
+            for idx, msg_id in enumerate(message_ids[:5]):
                 links.append(f"https://t.me/{chat_username}/{msg_id}")
 
         result = {
@@ -714,7 +695,6 @@ class ContentAnalyzer:
 
         self.last_result = result
 
-        # ОТПРАВКА В КАНАЛ
         if violation:
             try:
                 async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
