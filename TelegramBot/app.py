@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ТОЛЬКО ФОЛБЭК, БЕЗ GEMINI)
+# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ, ИСПРАВЛЕННАЯ)
 import os
 import sys
 import json
@@ -14,7 +14,7 @@ try:
     from telethon.tl.functions.account import ReportPeerRequest
     from telethon.tl.functions.channels import JoinChannelRequest
     from telethon.tl.types import InputReportReasonSpam
-    from telethon.errors import FloodWaitError, UsernameNotOccupiedError
+    from telethon.errors import FloodWaitError, UsernameNotOccupiedError, ChannelPrivateError
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
@@ -152,18 +152,29 @@ async def try_connect(session_path, timeout=20, retries=3):
 
 async def join_chat_if_needed(client, target):
     try:
+        # Обработка пригласительных ссылок
         if 't.me/joinchat' in target or 't.me/+' in target:
-            await client.join_channel(target)
-            return True
+            try:
+                await client.join_channel(target)
+                print(f"[JOIN] Успешно присоединился по ссылке: {target}")
+                return True
+            except Exception as e:
+                print(f"[JOIN] Ошибка присоединения по ссылке: {e}")
+                return False
+        
+        # Обычные ссылки
         entity = await client.get_entity(target)
         if hasattr(entity, 'username') and entity.username:
             try:
                 await client(JoinChannelRequest(entity))
+                print(f"[JOIN] Подписался на {entity.username}")
                 return True
-            except:
-                pass
+            except Exception as e:
+                print(f"[JOIN] Ошибка подписки: {e}")
+                return False
         return True
-    except:
+    except Exception as e:
+        print(f"[JOIN] Ошибка: {e}")
         return False
 
 def get_all_sessions():
@@ -184,6 +195,22 @@ async def get_live_session():
         if client:
             return client
     return None
+
+async def wait_for_join_approval(client, entity, timeout=30):
+    """Ждёт, пока заявка на вступление будет одобрена"""
+    print(f"[JOIN] Ожидание одобрения заявки... ({timeout} сек)")
+    for _ in range(timeout // 3):
+        await asyncio.sleep(3)
+        try:
+            # Пробуем получить сообщения из канала — если получается, значит приняли
+            msgs = await client.get_messages(entity, limit=1)
+            if msgs:
+                print(f"[JOIN] ✅ Заявка одобрена!")
+                return True
+        except:
+            continue
+    print(f"[JOIN] ❌ Заявка не одобрена за {timeout} сек")
+    return False
 
 # ===== ОПЕРАТОР =====
 async def send_operator_report(user_id, username, edit_callback=None):
@@ -583,12 +610,30 @@ class ContentAnalyzer:
         messages = []
         target_type = "unknown"
         chat_username = ""
+        message_ids = []  # ← реальные ID сообщений
 
         try:
+            # Обработка пригласительных ссылок
+            if 't.me/joinchat' in target or 't.me/+' in target:
+                try:
+                    await client.join_channel(target)
+                    print(f"[JOIN] Присоединился по ссылке")
+                    await asyncio.sleep(3)
+                except Exception as e:
+                    await client.disconnect()
+                    return None, f"Не удалось присоединиться по ссылке: {str(e)[:50]}"
+
+            # Получение сущности
             if 't.me/' in target:
-                chat_username = target.replace('https://t.me/', '').split('/')[0]
-                entity = await client.get_entity(f"@{chat_username}")
-                target_type = "канал"
+                if 'joinchat' not in target and '+' not in target:
+                    chat_username = target.replace('https://t.me/', '').split('/')[0]
+                    entity = await client.get_entity(f"@{chat_username}")
+                    target_type = "канал"
+                else:
+                    # для пригласительных ссылок нужно получить сущность по ссылке
+                    entity = await client.get_entity(target)
+                    chat_username = getattr(entity, 'username', 'unknown')
+                    target_type = "канал"
             elif target.startswith('@'):
                 chat_username = target.replace('@', '')
                 entity = await client.get_entity(target)
@@ -597,14 +642,31 @@ class ContentAnalyzer:
                 await client.disconnect()
                 return None, "Неверная ссылка"
 
+            # Подписка на канал
             try:
                 await client(JoinChannelRequest(entity))
-                await asyncio.sleep(5)
-            except Exception as e:
-                print(f"[WARN] Не удалось подписаться: {e}")
-                if "need to join" in str(e).lower():
+                print(f"[JOIN] Подписался на {chat_username}")
+                await asyncio.sleep(3)
+            except ChannelPrivateError:
+                # Канал закрытый — отправляем заявку
+                try:
+                    await client.send_message(entity, "Заявка на вступление")
+                    print(f"[JOIN] Отправлена заявка в {chat_username}")
                     await client.disconnect()
-                    return None, "Канал закрытый. Отправлена заявка."
+                    return None, f"🔒 Канал {chat_username} закрытый. Отправлена заявка на вступление. Подождите, пока вас примут, затем повторите анализ."
+                except Exception as e:
+                    await client.disconnect()
+                    return None, f"Ошибка при отправке заявки: {str(e)[:50]}"
+            except Exception as e:
+                # Если ошибка — пробуем отправить заявку
+                try:
+                    await client.send_message(entity, "Заявка на вступление")
+                    print(f"[JOIN] Отправлена заявка в {chat_username}")
+                    await client.disconnect()
+                    return None, f"🔒 Канал {chat_username} закрытый. Отправлена заявка на вступление. Подождите, пока вас примут, затем повторите анализ."
+                except:
+                    await client.disconnect()
+                    return None, f"Не удалось подписаться или отправить заявку: {str(e)[:50]}"
 
             if target_type == "бот":
                 try:
@@ -613,14 +675,16 @@ class ContentAnalyzer:
                 except:
                     pass
 
+            # Читаем сообщения с реальными ID
             msgs = await client.get_messages(entity, limit=50)
             for m in msgs:
                 if m and m.text:
                     messages.append(m.text)
+                    message_ids.append(m.id)  # ← сохраняем реальный ID
 
         except Exception as e:
             await client.disconnect()
-            return None, f"Ошибка: {e}"
+            return None, f"Ошибка: {str(e)[:50]}"
 
         await client.disconnect()
 
@@ -631,11 +695,11 @@ class ContentAnalyzer:
         results = self.analyze_messages(messages)
         violation, percent = self.get_violation(results)
 
+        # ФОРМИРУЕМ ССЫЛКИ С РЕАЛЬНЫМИ ID
         links = []
         if violation and chat_username:
-            # Формируем ссылки на сообщения
-            for i in range(min(len(messages), 5)):
-                links.append(f"https://t.me/{chat_username}/{i+1}")
+            for idx, msg_id in enumerate(message_ids[:5]):  # первые 5 нарушений
+                links.append(f"https://t.me/{chat_username}/{msg_id}")
 
         result = {
             "results": results,
@@ -644,7 +708,8 @@ class ContentAnalyzer:
             "messages": messages,
             "target_type": target_type,
             "count": len(messages),
-            "links": links
+            "links": links,
+            "chat_username": chat_username
         }
 
         self.last_result = result
@@ -945,7 +1010,7 @@ async def main_bot():
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
                 user_states[user_id] = 'waiting_ai_target'
-                await upd("🔍 AI-АНАЛИЗ\n\nОтправь ссылку\n@channel или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                await upd("🔍 AI-АНАЛИЗ\n\nОтправь ссылку\n@channel, https://t.me/... или ссылку на сообщение", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if data == "mix_drugs_yes":
@@ -1066,55 +1131,9 @@ async def main_bot():
                 return
 
             if state == 'waiting_ai_target':
-                if 't.me/' in text or text.startswith('@'):
-                    target = text
-                    user_states.pop(user_id, None)
-                    if user_id not in user_data:
-                        user_data[user_id] = {}
-                    user_data[user_id]['last_ai_target'] = target
-                    await upd("⏳ Сканирование...")
-                    
-                    result, error = await analyzer.analyze_target(target, None)
-                    
-                    if error:
-                        if "закрытый" in error:
-                            await upd(f"🔒 {error}\n\nБот автоматически проверит канал, как только заявка будет одобрена. Ожидайте...")
-                            return
-                        await upd(f"❌ {error}", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                        return
-                    
-                    if not result or not result.get("violation"):
-                        await upd(
-                            f"🔍 AI-АНАЛИЗ\n\n✅ Нарушений не найдено.\n\nЕсли вы считаете, что конкретное сообщение нарушает правила, отправьте его ссылку для анализа.",
-                            [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]]
-                        )
-                        user_states[user_id] = 'waiting_single_message'
-                        return
-                    
-                    violation = result.get("violation")
-                    percent = result.get("percent", 70)
-                    messages = result.get("messages", [])
-                    target_type = result.get("target_type", "unknown")
-                    links = result.get("links", [])
-                    
-                    report = f"🔍 AI-АНАЛИЗ\n\n"
-                    report += f"⚠️ Нарушение: {violation.upper()}\n"
-                    report += f"📊 Уверенность: {percent}%\n"
-                    report += f"📝 Объяснение: Найдено нарушение типа {violation} по ключевым словам\n"
-                    if links:
-                        report += f"🔗 Ссылки на нарушения:\n" + "\n".join(links)
-                    
-                    buttons = [
-                        [KeyboardButtonCallback("🚀 Отправить жалобу (Микс)", b"send_report_from_ai")],
-                        [KeyboardButtonCallback("🔙 Назад", b"main_menu")]
-                    ]
-                    await upd(report, buttons)
-                else:
-                    await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                return
-
-            if state == 'waiting_single_message':
-                if 't.me/' in text and '/' in text.replace('https://t.me/', ''):
+                # Проверяем, является ли ссылка ссылкой на сообщение
+                if 't.me/' in text and '/' in text.replace('https://t.me/', '') and len(text.replace('https://t.me/', '').split('/')) >= 2:
+                    # Это ссылка на сообщение
                     link = text
                     parts = link.replace('https://t.me/', '').split('/')
                     if len(parts) >= 2:
@@ -1167,8 +1186,51 @@ async def main_bot():
                             await client.disconnect()
                     else:
                         await upd("❌ Неверная ссылка на сообщение.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                elif 't.me/' in text or text.startswith('@'):
+                    # Это ссылка на канал/чат
+                    target = text
+                    user_states.pop(user_id, None)
+                    if user_id not in user_data:
+                        user_data[user_id] = {}
+                    user_data[user_id]['last_ai_target'] = target
+                    await upd("⏳ Сканирование...")
+                    
+                    result, error = await analyzer.analyze_target(target, None)
+                    
+                    if error:
+                        if "закрытый" in error or "заявка" in error:
+                            await upd(f"🔒 {error}\n\nКогда заявку одобрят, отправьте ссылку снова для анализа.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                            return
+                        await upd(f"❌ {error}", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                        return
+                    
+                    if not result or not result.get("violation"):
+                        await upd(
+                            f"🔍 AI-АНАЛИЗ\n\n✅ Нарушений не найдено.\n\nЕсли вы считаете, что конкретное сообщение нарушает правила, отправьте его ссылку для анализа.",
+                            [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]]
+                        )
+                        return
+                    
+                    violation = result.get("violation")
+                    percent = result.get("percent", 70)
+                    messages = result.get("messages", [])
+                    target_type = result.get("target_type", "unknown")
+                    links = result.get("links", [])
+                    
+                    report = f"🔍 AI-АНАЛИЗ\n\n"
+                    report += f"⚠️ Нарушение: {violation.upper()}\n"
+                    report += f"📊 Уверенность: {percent}%\n"
+                    report += f"📝 Объяснение: Найдено нарушение типа {violation} по ключевым словам\n"
+                    if links:
+                        report += f"🔗 Ссылки на нарушения:\n" + "\n".join(links)
+                    
+                    buttons = [
+                        [KeyboardButtonCallback("🚀 Отправить жалобу (Микс)", b"send_report_from_ai")],
+                        [KeyboardButtonCallback("🔙 Назад", b"main_menu")]
+                    ]
+                    await upd(report, buttons)
                 else:
-                    await upd("❌ Отправьте ссылку на сообщение (например, https://t.me/username/5)", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    await upd("❌ Неверная ссылка. Отправьте ссылку на канал или сообщение.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_mix_description':
