@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ФИНАЛЬНАЯ РАБОЧАЯ ВЕРСИЯ)
+# app.py — APEX REPORT (ПОЛНАЯ ВЕРСИЯ С HTTP-СЕРВЕРОМ)
 import os
 import sys
 import json
@@ -8,6 +8,7 @@ import random
 import time
 from datetime import datetime, timedelta
 from io import BytesIO
+from aiohttp import web
 
 try:
     from reportlab.lib.pagesizes import A4
@@ -28,6 +29,7 @@ try:
 except ImportError:
     TELEGRAM_AVAILABLE = False
 
+# ===== ТВОИ ДАННЫЕ =====
 API_ID = 21826549
 API_HASH = 'c1a19f792cfd9e397200d16c7e448160'
 BOT_TOKEN = '8870668741:AAHL2cO1BWoHau-bVmBLziMadDj94SnU7IA'
@@ -37,6 +39,7 @@ DEVELOPER_LINK = 'https://t.me/cazlen'
 BOT_NAME = 'APEX REPORT'
 ADMIN_IDS = [8701448954]
 
+# ===== ПУТИ =====
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSIONS_DIR = os.path.join(BASE_DIR, 'sessions')
 os.makedirs(SESSIONS_DIR, exist_ok=True)
@@ -55,6 +58,7 @@ REQUESTS_FILE = os.path.join(BASE_DIR, 'requests.json')
 _subs_cache = {}
 _subs_cache_time = 0
 
+# ===== РАБОТА С ДАННЫМИ =====
 def load_data():
     if os.path.exists(LOG_FILE):
         try:
@@ -120,6 +124,7 @@ def has_subscription(user_id):
 def generate_phone():
     return f"+7{random.randint(1000000000, 9999999999)}"
 
+# ===== ПОДКЛЮЧЕНИЕ =====
 async def try_connect(session_path, timeout=20, retries=3):
     session_name = os.path.basename(session_path)
     for attempt in range(retries):
@@ -173,6 +178,7 @@ async def get_live_session():
             return client
     return None
 
+# ===== ГЕНЕРАЦИЯ PDF =====
 def generate_pdf(user_id, reports):
     if not REPORTLAB_AVAILABLE:
         return None
@@ -218,6 +224,7 @@ def generate_pdf(user_id, reports):
     buffer.seek(0)
     return buffer
 
+# ===== ОТПРАВКА ЛОГОВ В КАНАЛ =====
 async def send_log_to_channel(text):
     try:
         async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
@@ -226,6 +233,7 @@ async def send_log_to_channel(text):
     except Exception as e:
         print(f"[LOG] Error: {e}")
 
+# ===== ОПЕРАТОР =====
 async def send_operator_report(user_id, username, edit_callback=None):
     try:
         client = await get_live_session()
@@ -269,6 +277,7 @@ async def send_operator_report(user_id, username, edit_callback=None):
         await edit_callback(result)
     return result
 
+# ===== ТЕЛЕТОН =====
 async def send_telethon_report(user_id, target, edit_callback=None):
     all_sessions = get_all_sessions()
     if not all_sessions:
@@ -351,6 +360,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
         await edit_callback(result)
     return result
 
+# ===== МИКС =====
 async def send_mix_report(user_id, target, text, edit_callback=None):
     all_sessions = []
     if os.path.exists(AU_DIR):
@@ -489,6 +499,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         await edit_callback("Mix complaint sent")
     return "Mix complaint sent"
 
+# ===== ГЕНЕРАЦИЯ ТЕКСТА ДЛЯ МИКСА =====
 def generate_mix_text(target, violation, links):
     if not links:
         links = ["No links provided"]
@@ -503,6 +514,7 @@ Please review the reported content and take appropriate action if it violates Te
 Thank you for your attention."""
     return text
 
+# ===== AI-АНАЛИЗ =====
 class ContentAnalyzer:
     def __init__(self):
         self.last_result = None
@@ -632,6 +644,22 @@ class ContentAnalyzer:
             await send_log_to_channel(f"AI Analysis: {target} - {violation} ({percent}%)")
         return result, None
 
+# ===== HTTP-СЕРВЕР ДЛЯ RENDER =====
+async def health_check(request):
+    return web.Response(text="I'm alive!")
+
+async def start_http_server():
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host='0.0.0.0', port=10000)
+    await site.start()
+    print("[HTTP] Server started on port 10000")
+    await asyncio.Event().wait()
+
+# ===== БОТ ДЛЯ ПОДПИСОК =====
 async def run_subscription_bot():
     try:
         print("[SUB-BOT] Starting...")
@@ -750,6 +778,7 @@ async def run_subscription_bot():
     except Exception as e:
         print(f"[SUB-BOT] Error: {e}")
 
+# ===== ГЛАВНЫЙ БОТ =====
 async def main_bot():
     try:
         bot = TelegramClient('bot_session', API_ID, API_HASH)
@@ -1074,10 +1103,12 @@ async def main_bot():
     except Exception as e:
         print(f"Error: {e}")
 
+# ===== ЗАПУСК =====
 async def main():
+    http_task = asyncio.create_task(start_http_server())
     main_task = asyncio.create_task(main_bot())
     sub_task = asyncio.create_task(run_subscription_bot())
-    await asyncio.gather(main_task, sub_task)
+    await asyncio.gather(main_task, sub_task, http_task)
 
 if __name__ == "__main__":
     try:
