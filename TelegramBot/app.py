@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ)
+# app.py — APEX REPORT (ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ)
 import os
 import sys
 import json
@@ -8,6 +8,7 @@ import random
 import time
 from datetime import datetime, timedelta
 from aiohttp import web
+import aiohttp
 
 try:
     from telethon import TelegramClient, events, errors
@@ -48,6 +49,7 @@ REQUESTS_FILE = os.path.join(BASE_DIR, 'requests.json')
 
 _subs_cache = {}
 _subs_cache_time = 0
+pending_requests = {}  # ГЛОБАЛЬНЫЙ СЛОВАРЬ ДЛЯ ЗАЯВОК
 
 # ===== РАБОТА С ДАННЫМИ =====
 def load_data():
@@ -169,25 +171,102 @@ async def get_live_session():
             return client
     return None
 
-# ===== ГЕНЕРАЦИЯ ТЕКСТА ЖАЛОБЫ (НОРМАЛЬНАЯ) =====
-def generate_complaint_text(target, violation, description, links):
-    """Генерирует нормальный текст жалобы без URGENT"""
+# ===== AI-АНАЛИЗ ЧЕРЕЗ POLLINATIONS AI =====
+async def analyze_with_ai(texts, target, single=False):
+    """Отправляет текст в Pollinations AI и возвращает JSON"""
+    if single:
+        messages_text = texts[0] if texts else "Пустое сообщение"
+        prompt = f"""Analyze this single message from Telegram and determine if it violates Telegram's Terms of Service.
+
+Message: {messages_text}
+
+Return JSON with:
+- violation: type (drugs/spam/porn/violence/scam/personal/bullying) or null if none
+- severity: high/medium/low or null
+- explanation: short explanation in Russian
+
+Format: {{"violation": "spam", "severity": "medium", "explanation": "Спам-сообщение..."}}"""
+    else:
+        messages_text = "\n".join(texts[:50])
+        prompt = f"""Analyze these messages from a Telegram channel and determine if they violate Telegram's Terms of Service.
+
+Channel: {target}
+Messages:
+{messages_text}
+
+Return JSON with:
+- violation: type (drugs/spam/porn/violence/scam/personal/bullying) or null if none
+- severity: high/medium/low or null
+- explanation: short explanation in Russian
+- links: array of links to violating messages (if any)
+
+Format:
+{{
+    "violation": "drugs",
+    "severity": "high",
+    "explanation": "Канал рекламирует продажу кокаина...",
+    "links": ["https://t.me/test_channel/2", "https://t.me/test_channel/3"]
+}}"""
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = "https://api.pollinations.ai/v1/chat/completions"
+            payload = {
+                "model": "openai",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+                "stream": False
+            }
+            async with session.post(url, json=payload, timeout=30) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    result_text = data['choices'][0]['message']['content']
+                    if result_text.startswith('```json'):
+                        result_text = result_text.replace('```json', '').replace('```', '').strip()
+                    elif result_text.startswith('```'):
+                        result_text = result_text.replace('```', '').strip()
+                    try:
+                        return json.loads(result_text)
+                    except:
+                        return {"error": "Ошибка парсинга JSON от AI", "raw": result_text}
+                else:
+                    return {"error": f"Ошибка AI: {resp.status}"}
+    except Exception as e:
+        return {"error": f"Ошибка AI: {str(e)[:100]}"}
+
+# ===== ГЕНЕРАЦИЯ ТЕКСТА ЖАЛОБЫ =====
+async def generate_complaint_text(target, violation, description, links):
+    """Генерирует нормальный текст жалобы без URGENT через AI"""
     if not links:
         links = ["No specific links provided"]
     
-    text = f"""I would like to report a Telegram channel that appears to be involved in {violation}.
+    prompt = f"""Generate a short, formal complaint to Telegram moderators about a channel that violates Terms of Service.
 
 Channel: {target}
-
-The channel contains messages that violate Telegram's Terms of Service. {description}
-
-Reported messages:
+Violation type: {violation}
+User description: {description}
+Links to violating messages:
 {chr(10).join(links)}
 
-Please review this content and take appropriate action.
+Write a formal complaint without any urgent words. Use only English. Keep it concise (maximum 100 words)."""
 
-Thank you."""
-    return text
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = "https://api.pollinations.ai/v1/chat/completions"
+            payload = {
+                "model": "openai",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.3,
+                "stream": False
+            }
+            async with session.post(url, json=payload, timeout=30) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data['choices'][0]['message']['content'].strip()
+                else:
+                    return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {target}\n\n{description}\n\nReported messages:\n{chr(10).join(links)}\n\nPlease review this content and take appropriate action.\n\nThank you."
+    except:
+        return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {target}\n\n{description}\n\nReported messages:\n{chr(10).join(links)}\n\nPlease review this content and take appropriate action.\n\nThank you."
 
 # ===== ОПЕРАТОР =====
 async def send_operator_report(user_id, username, edit_callback=None):
@@ -496,54 +575,20 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
     return "✅ Микс-жалоба отправлена!"
 
 # ===== AI-АНАЛИЗ =====
-class ContentAnalyzer:
+class AIAnalyzer:
     def __init__(self):
         self.last_result = None
         self.keywords = {
-            "drugs": [
-                "наркотик", "наркота", "наркотики", "кокаин", "кока", "кокс",
-                "героин", "метамфетамин", "экстази", "марихуана", "анаша", "план",
-                "шишки", "бошки", "гашиш", "спайс", "соль", "скорость", "кристалл",
-                "закладка", "закладки", "продажа", "продам", "куплю", "синтетика",
-                "drugs", "cocaine", "heroin", "meth", "mdma", "weed", "cannabis"
-            ],
-            "personal": [
-                "паспорт", "фио", "ф.и.о", "адрес", "прописка", "регистрация",
-                "дом", "квартира", "подъезд", "этаж", "улица", "телефон",
-                "снилс", "инн", "личные данные", "passport", "address", "phone"
-            ],
-            "porn": [
-                "порно", "порнография", "секс", "эротика", "голый", "голая",
-                "интим", "18+", "porn", "sex", "nude", "adult"
-            ],
-            "violence": [
-                "насилие", "убить", "убийство", "смерть", "оружие", "пистолет",
-                "нож", "угроза", "избить", "кровь", "взорвать", "бомба",
-                "violence", "kill", "death", "weapon", "gun", "threat"
-            ],
-            "spam": [
-                "спам", "реклама", "пиар", "подпишись", "подписка", "рассылка",
-                "spam", "ad", "promo", "subscribe"
-            ],
-            "scam": [
-                "лохотрон", "развод", "обман", "мошенник", "пирамида",
-                "инвестиции", "фишинг", "scam", "fraud", "phishing"
-            ],
-            "bullying": [
-                "буллинг", "травля", "оскорбление", "унижение", "bullying",
-                "harassment", "insult"
-            ]
+            "drugs": ["наркотик", "кокаин", "героин", "спайс", "соль", "шишки", "закладка", "продажа", "продам", "drugs", "cocaine", "heroin"],
+            "personal": ["паспорт", "фио", "адрес", "телефон", "личные данные", "passport", "address", "phone"],
+            "porn": ["порно", "секс", "18+", "голый", "porn", "sex", "nude"],
+            "violence": ["насилие", "убить", "оружие", "угроза", "violence", "kill", "weapon"],
+            "spam": ["спам", "реклама", "подпишись", "spam", "ad", "promo"],
+            "scam": ["лохотрон", "пирамида", "инвестиции", "scam", "fraud"],
+            "bullying": ["буллинг", "травля", "оскорбление", "bullying", "harassment"]
         }
 
-        self.patterns = {
-            "phone": r'(\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}',
-            "email": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-            "passport": r'[0-9]{4}\s?[0-9]{6}',
-            "address": r'(г|гор|город|ул|улица|пр|проспект|пер|переулок|бул|бульвар|д|дом|кв|квартира)[\.\s]',
-            "fio": r'[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+'
-        }
-
-    def analyze_text(self, text):
+    def fallback_analyze(self, text):
         text_lower = text.lower()
         results = {}
         for category, words in self.keywords.items():
@@ -552,19 +597,7 @@ class ContentAnalyzer:
                 if word in text_lower:
                     count += 1
             results[category] = min(count * 25, 100)
-
-        for pattern_name, pattern in self.patterns.items():
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                cat_map = {"phone": "personal", "email": "personal", "passport": "personal", "address": "personal", "fio": "personal"}
-                if pattern_name in cat_map:
-                    cat = cat_map[pattern_name]
-                    results[cat] = min(results.get(cat, 0) + 30, 100)
         return results
-
-    def analyze_messages(self, messages):
-        combined = " ".join(messages)
-        return self.analyze_text(combined)
 
     def get_violation(self, results):
         sorted_results = sorted(results.items(), key=lambda x: x[1], reverse=True)
@@ -573,7 +606,7 @@ class ContentAnalyzer:
                 return cat, percent
         return None, 0
 
-    async def analyze_target(self, target, bot_instance):
+    async def analyze_target(self, target, user_id, bot_instance):
         client = await get_live_session()
         if not client:
             return None, "❌ Нет живых сессий"
@@ -584,47 +617,90 @@ class ContentAnalyzer:
         message_ids = []
 
         try:
+            # Обработка пригласительных ссылок
+            if 't.me/joinchat' in target or 't.me/+' in target:
+                try:
+                    await client.join_channel(target)
+                    print(f"[JOIN] Присоединился по ссылке")
+                    await asyncio.sleep(3)
+                except Exception as e:
+                    await client.disconnect()
+                    return None, f"❌ Не удалось присоединиться по ссылке: {str(e)[:50]}"
+
+            # Получение сущности
             if 't.me/' in target:
-                clean_target = target.replace('https://t.me/', '').replace('t.me/', '')
-                if '/' in clean_target and not clean_target.startswith('joinchat') and not clean_target.startswith('+'):
-                    chat_username = clean_target.split('/')[0]
+                if 'joinchat' not in target and '+' not in target:
+                    chat_username = target.replace('https://t.me/', '').split('/')[0]
                     entity = await client.get_entity(f"@{chat_username}")
                     target_type = "канал"
                 else:
-                    try:
-                        entity = await client.get_entity(target)
-                        chat_username = getattr(entity, 'username', 'unknown')
-                        target_type = "канал"
-                    except Exception:
-                        if '/' in clean_target:
-                            chat_username = clean_target.split('/')[0]
-                        else:
-                            chat_username = clean_target
-                        entity = await client.get_entity(f"@{chat_username}")
-                        target_type = "канал"
+                    entity = await client.get_entity(target)
+                    chat_username = getattr(entity, 'username', 'unknown')
+                    target_type = "канал"
             elif target.startswith('@'):
                 chat_username = target.replace('@', '')
                 entity = await client.get_entity(target)
-                target_type = "пользователь"
+                target_type = "бот" if entity.bot else "пользователь"
             else:
                 await client.disconnect()
                 return None, "❌ Неверная ссылка"
 
+            # Подписка на канал
             try:
                 await client(JoinChannelRequest(entity))
                 print(f"[JOIN] Подписался на {chat_username}")
                 await asyncio.sleep(3)
             except ChannelPrivateError:
+                # Канал закрытый — отправляем заявку
                 try:
                     await client.send_message(entity, "Заявка на вступление")
                     print(f"[JOIN] Отправлена заявка в {chat_username}")
+                    # Сохраняем задачу в глобальном словаре
+                    global pending_requests
+                    pending_requests[user_id] = {
+                        "target": target,
+                        "entity": entity,
+                        "chat_username": chat_username,
+                        "user_id": user_id,
+                        "bot_instance": bot_instance,
+                        "status": "waiting",
+                        "client_filename": client.session.filename
+                    }
                     await client.disconnect()
-                    return None, f"🔒 Канал {chat_username} закрытый. Отправлена заявка. Повторите анализ после одобрения."
+                    return None, f"🔒 Канал {chat_username} закрытый. Отправлена заявка. Я уведомлю вас, когда заявку одобрят."
                 except Exception as e:
-                    print(f"[JOIN] Ошибка: {e}")
+                    await client.disconnect()
+                    return None, f"❌ Ошибка при отправке заявки: {str(e)[:50]}"
             except Exception as e:
-                print(f"[JOIN] Ошибка: {e}")
+                # Если ошибка — пробуем отправить заявку
+                try:
+                    await client.send_message(entity, "Заявка на вступление")
+                    print(f"[JOIN] Отправлена заявка в {chat_username}")
+                    global pending_requests
+                    pending_requests[user_id] = {
+                        "target": target,
+                        "entity": entity,
+                        "chat_username": chat_username,
+                        "user_id": user_id,
+                        "bot_instance": bot_instance,
+                        "status": "waiting",
+                        "client_filename": client.session.filename
+                    }
+                    await client.disconnect()
+                    return None, f"🔒 Канал {chat_username} закрытый. Отправлена заявка. Я уведомлю вас, когда заявку одобрят."
+                except:
+                    await client.disconnect()
+                    return None, f"❌ Не удалось подписаться или отправить заявку: {str(e)[:50]}"
 
+            # Если это бот — нажимаем /start
+            if target_type == "бот":
+                try:
+                    await client.send_message(entity, '/start')
+                    await asyncio.sleep(2)
+                except:
+                    pass
+
+            # Читаем сообщения с реальными ID
             msgs = await client.get_messages(entity, limit=50)
             for m in msgs:
                 if m and m.text:
@@ -640,39 +716,47 @@ class ContentAnalyzer:
         if not messages:
             return None, "❌ Нет сообщений"
 
-        results = self.analyze_messages(messages)
-        violation, percent = self.get_violation(results)
+        # АНАЛИЗ ЧЕРЕЗ AI
+        result = await analyze_with_ai(messages, target)
+        
+        # Если AI не сработал — фолбэк
+        if result.get("error"):
+            print(f"[AI] Ошибка: {result['error']}, используем фолбэк")
+            results = self.fallback_analyze(" ".join(messages))
+            violation, percent = self.get_violation(results)
+            if violation:
+                result = {
+                    "violation": violation,
+                    "severity": "medium",
+                    "explanation": f"Найдено нарушение типа {violation} по ключевым словам",
+                    "links": []
+                }
+                if chat_username:
+                    for idx, msg_id in enumerate(message_ids[:5]):
+                        result["links"].append(f"https://t.me/{chat_username}/{msg_id}")
+            else:
+                result = {"violation": None, "severity": None, "explanation": "Нарушений не найдено.", "links": []}
 
-        links = []
-        if violation and chat_username:
-            for idx, msg_id in enumerate(message_ids[:5]):
-                links.append(f"https://t.me/{chat_username}/{msg_id}")
-
-        result = {
-            "results": results,
-            "violation": violation,
-            "percent": percent,
-            "messages": messages,
-            "target_type": target_type,
-            "count": len(messages),
-            "links": links,
-            "chat_username": chat_username
-        }
+        # Формируем ссылки, если их нет
+        if result.get("violation") and not result.get("links") and chat_username:
+            result["links"] = [f"https://t.me/{chat_username}/{msg_id}" for msg_id in message_ids[:5]]
 
         self.last_result = result
 
-        if violation:
+        # Отправляем в канал
+        if result.get("violation"):
             try:
                 async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
                     channel = await temp_client.get_entity(CHANNEL_ID)
                     report_text = (
                         f"🔍 AI Анализ: {target}\n"
                         f"Тип: {target_type.upper()}\n"
-                        f"⚠️ Нарушение: {violation.upper()} ({percent}%)\n"
+                        f"⚠️ Нарушение: {result['violation'].upper()} ({result.get('severity', 'medium').upper()})\n"
+                        f"📝 Объяснение: {result.get('explanation', '')}\n"
                         f"📊 Сообщений: {len(messages)}\n"
                     )
-                    if links:
-                        report_text += f"🔗 Ссылки на нарушения:\n" + "\n".join(links)
+                    if result.get("links"):
+                        report_text += f"🔗 Ссылки на нарушения:\n" + "\n".join(result["links"])
                     else:
                         report_text += "❌ Найдено нарушение!"
                     await temp_client.send_message(channel, report_text)
@@ -680,6 +764,107 @@ class ContentAnalyzer:
                 pass
 
         return result, None
+
+    async def check_pending_requests(self, bot_instance):
+        """Фоновый процесс: проверяет заявки каждые 10 секунд"""
+        global pending_requests
+        while True:
+            try:
+                await asyncio.sleep(10)
+                for user_id, req in list(pending_requests.items()):
+                    if req.get("status") != "waiting":
+                        continue
+                    
+                    # Пробуем подключиться и прочитать канал
+                    client = await try_connect(req["client_filename"], timeout=10, retries=1)
+                    if not client:
+                        continue
+                    
+                    try:
+                        # Пробуем прочитать сообщения
+                        msgs = await client.get_messages(req["entity"], limit=1)
+                        if msgs:
+                            # Заявка одобрена!
+                            req["status"] = "approved"
+                            print(f"[JOIN] Заявка для {req['chat_username']} одобрена!")
+                            
+                            # Анализируем канал
+                            messages = []
+                            message_ids = []
+                            all_msgs = await client.get_messages(req["entity"], limit=50)
+                            for m in all_msgs:
+                                if m and m.text:
+                                    messages.append(m.text)
+                                    message_ids.append(m.id)
+                            
+                            if messages:
+                                result = await analyze_with_ai(messages, req["target"])
+                                if result.get("error"):
+                                    results = self.fallback_analyze(" ".join(messages))
+                                    violation, percent = self.get_violation(results)
+                                    if violation:
+                                        result = {
+                                            "violation": violation,
+                                            "severity": "medium",
+                                            "explanation": f"Найдено нарушение типа {violation} по ключевым словам",
+                                            "links": []
+                                        }
+                                        if req["chat_username"]:
+                                            for idx, msg_id in enumerate(message_ids[:5]):
+                                                result["links"].append(f"https://t.me/{req['chat_username']}/{msg_id}")
+                                    else:
+                                        result = {"violation": None, "severity": None, "explanation": "Нарушений не найдено.", "links": []}
+                                
+                                if result.get("violation") and not result.get("links") and req["chat_username"]:
+                                    result["links"] = [f"https://t.me/{req['chat_username']}/{msg_id}" for msg_id in message_ids[:5]]
+                                
+                                # Отправляем результат пользователю
+                                if result.get("violation"):
+                                    report = f"🔍 AI-АНАЛИЗ\n\nЦель: {req['target']}\nТип: КАНАЛ\nНарушение: {result['violation'].upper()} ({result.get('severity', 'medium').upper()})\nОбъяснение: {result.get('explanation', '')}\n"
+                                    if result.get("links"):
+                                        report += "\n🔗 Ссылки на нарушения:\n" + "\n".join(result["links"])
+                                    
+                                    buttons = [
+                                        [KeyboardButtonCallback("🚀 Отправить жалобу", f"send_ai_report_{user_id}")],
+                                        [KeyboardButtonCallback("🔙 Назад", "back_to_start")]
+                                    ]
+                                    try:
+                                        await bot_instance.send_message(user_id, report, buttons=buttons)
+                                    except:
+                                        pass
+                                else:
+                                    try:
+                                        await bot_instance.send_message(user_id, f"🔍 AI-АНАЛИЗ\n\nЦель: {req['target']}\n✅ Нарушений не найдено.")
+                                    except:
+                                        pass
+                            
+                            await client.disconnect()
+                            pending_requests.pop(user_id, None)
+                        else:
+                            await client.disconnect()
+                    except:
+                        await client.disconnect()
+            except:
+                continue
+
+    async def analyze_single_message(self, message_text, link):
+        result = await analyze_with_ai([message_text], link, single=True)
+        if result.get("error"):
+            results = self.fallback_analyze(message_text)
+            violation, percent = self.get_violation(results)
+            if violation:
+                result = {
+                    "violation": violation,
+                    "severity": "medium",
+                    "explanation": f"Найдено нарушение типа {violation} по ключевым словам",
+                    "links": [link]
+                }
+            else:
+                result = {"violation": None, "severity": None, "explanation": "Нарушений не найдено.", "links": []}
+        if result.get("violation") and not result.get("links"):
+            result["links"] = [link]
+        self.last_result = result
+        return result
 
 # ===== HTTP-СЕРВЕР ДЛЯ RENDER =====
 async def health_check(request):
@@ -824,7 +1009,11 @@ async def main_bot():
         user_states = {}
         user_data = {}
         active_messages = {}
-        analyzer = ContentAnalyzer()
+        analyzer = AIAnalyzer()
+        
+        # Запускаем фоновый процесс проверки заявок
+        asyncio.create_task(analyzer.check_pending_requests(bot))
+        
         async def update_message(event, text, buttons=None):
             user_id = event.sender_id
             try:
@@ -952,24 +1141,28 @@ async def main_bot():
                 user_states[user_id] = 'waiting_mix_description'
                 await upd("📝 ОПИСАНИЕ\n\nТип; Причина; Ссылки\nПример: Канал; продажа; https://t.me/x/12", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
-            if data == "send_report_from_ai":
+            if data.startswith("send_ai_report_"):
+                try:
+                    target_user_id = int(data.split("_")[3])
+                except:
+                    target_user_id = user_id
                 if not analyzer.last_result or not analyzer.last_result.get("violation"):
                     await upd("❌ Нет нарушений для отправки.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                     return
                 violation = analyzer.last_result.get("violation")
-                target = user_data.get(user_id, {}).get("last_ai_target", "unknown")
+                target = user_data.get(target_user_id, {}).get("last_ai_target", "unknown")
                 links = analyzer.last_result.get("links", [])
-                description = user_data.get(user_id, {}).get("last_ai_description", "Violation detected")
-                text = generate_complaint_text(target, violation, description, links)
+                description = user_data.get(target_user_id, {}).get("last_ai_description", "Violation detected")
+                text = await generate_complaint_text(target, violation, description, links)
                 await upd("⏳ Отправка микс-жалобы...")
-                result = await send_mix_report(user_id, target, text, edit_callback=None)
+                result = await send_mix_report(target_user_id, target, text, edit_callback=None)
                 data = load_data()
                 data.setdefault('reports', []).append({
                     'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     'target': target,
                     'type': 'Микс-жалоба (AI)',
                     'destination': 'AU + TIDA',
-                    'user': user_id,
+                    'user': target_user_id,
                     'links': links
                 })
                 save_data(data)
@@ -1047,7 +1240,7 @@ async def main_bot():
                         user_data[user_id] = {}
                     user_data[user_id]['last_ai_target'] = target
                     await upd("⏳ Сканирование...")
-                    result, error = await analyzer.analyze_target(target, None)
+                    result, error = await analyzer.analyze_target(target, user_id, bot)
                     if error:
                         await upd(f"{error}", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                         return
@@ -1058,19 +1251,17 @@ async def main_bot():
                         )
                         return
                     violation = result.get("violation")
-                    percent = result.get("percent", 70)
-                    messages = result.get("messages", [])
-                    target_type = result.get("target_type", "unknown")
+                    severity = result.get("severity", "medium")
+                    explanation = result.get("explanation", "")
                     links = result.get("links", [])
-                    report = f"🔍 AI-АНАЛИЗ\n\nЦель: {target}\nТип: {target_type.upper()}\nНарушение: {violation.upper()} ({percent}%)\nСообщений: {len(messages)}\n"
+                    report = f"🔍 AI-АНАЛИЗ\n\nЦель: {target}\nТип: КАНАЛ\nНарушение: {violation.upper()} ({severity.upper()})\nОбъяснение: {explanation}\n"
                     if links:
                         report += "\n🔗 Ссылки на нарушения:\n" + "\n".join(links)
                     buttons = [
-                        [KeyboardButtonCallback("🚀 Отправить жалобу", b"send_report_from_ai")],
+                        [KeyboardButtonCallback("🚀 Отправить жалобу", f"send_ai_report_{user_id}")],
                         [KeyboardButtonCallback("🔙 Назад", b"main_menu")]
                     ]
-                    # Сохраняем описание для генерации текста
-                    user_data[user_id]['last_ai_description'] = f"Violation type: {violation}. Found in {len(messages)} messages."
+                    user_data[user_id]['last_ai_description'] = f"Violation type: {violation}. Found in {len(result.get('messages', []))} messages."
                     await upd(report, buttons)
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1087,8 +1278,7 @@ async def main_bot():
                 evidence_links = parts[2].strip() if len(parts) > 2 else ""
                 violation = "drugs" if drugs == 'yes' else "violation"
                 links = [link.strip() for link in evidence_links.split(',')] if evidence_links else []
-                # Генерируем текст через НОРМАЛЬНУЮ функцию
-                text = generate_complaint_text(target, violation, description, links)
+                text = await generate_complaint_text(target, violation, description, links)
                 user_states.pop(user_id, None)
                 await upd("⏳ Отправка микс-жалобы...")
                 result = await send_mix_report(user_id, target, text, edit_callback=None)
@@ -1110,6 +1300,9 @@ async def main_bot():
             await event.delete()
             user_states.pop(user_id, None)
             user_data.pop(user_id, None)
+            global pending_requests
+            if user_id in pending_requests:
+                pending_requests.pop(user_id, None)
             if has_subscription(user_id):
                 buttons = [
                     [KeyboardButtonCallback("📋 Меню", b"main_menu")],
