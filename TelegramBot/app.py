@@ -49,7 +49,7 @@ REQUESTS_FILE = os.path.join(BASE_DIR, 'requests.json')
 
 _subs_cache = {}
 _subs_cache_time = 0
-pending_requests = {}
+pending_requests = {}  # ГЛОБАЛЬНЫЙ СЛОВАРЬ ДЛЯ ЗАЯВОК
 
 # ===== РАБОТА С ДАННЫМИ =====
 def load_data():
@@ -572,7 +572,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         await edit_callback("✅ Микс-жалоба отправлена!")
     return "✅ Микс-жалоба отправлена!"
 
-# ===== AI-АНАЛИЗ =====
+# ===== AI-АНАЛИЗ (ИСПРАВЛЕННЫЙ) =====
 class AIAnalyzer:
     def __init__(self):
         self.last_result = None
@@ -649,7 +649,6 @@ class AIAnalyzer:
                 try:
                     await client.send_message(entity, "Заявка на вступление")
                     print(f"[JOIN] Отправлена заявка в {chat_username}")
-                    global pending_requests
                     pending_requests[user_id] = {
                         "target": target,
                         "entity": entity,
@@ -668,7 +667,6 @@ class AIAnalyzer:
                 try:
                     await client.send_message(entity, "Заявка на вступление")
                     print(f"[JOIN] Отправлена заявка в {chat_username}")
-                    global pending_requests
                     pending_requests[user_id] = {
                         "target": target,
                         "entity": entity,
@@ -752,7 +750,6 @@ class AIAnalyzer:
         return result, None
 
     async def check_pending_requests(self, bot_instance):
-        global pending_requests
         while True:
             try:
                 await asyncio.sleep(10)
@@ -1279,7 +1276,6 @@ async def main_bot():
             await event.delete()
             user_states.pop(user_id, None)
             user_data.pop(user_id, None)
-            global pending_requests
             if user_id in pending_requests:
                 pending_requests.pop(user_id, None)
             if has_subscription(user_id):
