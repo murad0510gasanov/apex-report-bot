@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ПОЛНЫЙ, PDF РАБОТАЕТ)
+# app.py — APEX REPORT (ПОЛНЫЙ КОД, КНОПКА PDF ЕСТЬ)
 import os
 import sys
 import json
@@ -481,7 +481,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             await asyncio.sleep(2)
             async for msg in client.iter_messages('@TIDABot', limit=5):
                 if msg.buttons:
-                    for row在 msg.buttons:
+                    for row in msg.buttons:
                         for btn in row:
                             if btn.text and 'Non-consensual' in btn.text:
                                 await btn.click()
@@ -961,7 +961,6 @@ async def main_bot():
                     return
                 
                 try:
-                    # ИСПРАВЛЕНО: правильная отправка файла через Telethon
                     await event.reply(file=pdf_buffer, force_document=True)
                 except Exception as e:
                     await upd(f"❌ Ошибка отправки PDF: {str(e)[:50]}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
