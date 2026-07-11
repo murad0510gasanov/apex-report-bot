@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ПОЛНАЯ ВЕРСИЯ С PDF)
+# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ)
 import os
 import sys
 import json
@@ -7,20 +7,7 @@ import re
 import random
 import time
 from datetime import datetime, timedelta
-from io import BytesIO
 from aiohttp import web
-import pytz
-
-try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas
-    from reportlab.lib import colors
-    from reportlab.platypus import Table, TableStyle
-    from reportlab.lib.units import inch
-    REPORTLAB_AVAILABLE = True
-except ImportError:
-    REPORTLAB_AVAILABLE = False
-    print("[WARN] reportlab не установлен. PDF не будет работать.")
 
 try:
     from telethon import TelegramClient, events, errors
@@ -182,106 +169,25 @@ async def get_live_session():
             return client
     return None
 
-# ===== ГЕНЕРАЦИЯ PDF (ОБНОВЛЁННАЯ) =====
-def generate_pdf(user_id, reports, username="Неизвестно"):
-    if not REPORTLAB_AVAILABLE:
-        return None
+# ===== ГЕНЕРАЦИЯ ТЕКСТА ЖАЛОБЫ (НОРМАЛЬНАЯ) =====
+def generate_complaint_text(target, violation, description, links):
+    """Генерирует нормальный текст жалобы без URGENT"""
+    if not links:
+        links = ["No specific links provided"]
+    
+    text = f"""I would like to report a Telegram channel that appears to be involved in {violation}.
 
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
-    y = height - 50
-    msk = pytz.timezone('Europe/Moscow')
+Channel: {target}
 
-    # ЗАГОЛОВОК
-    c.setFont("Helvetica-Bold", 16)
-    c.setFillColor(colors.darkblue)
-    c.drawString(50, y, "ЛИЧНЫЙ ОТЧЁТ ПО ЖАЛОБАМ")
-    y -= 30
+The channel contains messages that violate Telegram's Terms of Service. {description}
 
-    # ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЕ
-    c.setFont("Helvetica", 12)
-    c.setFillColor(colors.black)
-    c.drawString(50, y, f"Пользователь: {username}")
-    y -= 20
-    c.drawString(50, y, f"ID: {user_id}")
-    y -= 20
-    c.drawString(50, y, f"Дата: {datetime.now(msk).strftime('%d.%m.%Y %H:%M')} MSK")
-    y -= 30
+Reported messages:
+{chr(10).join(links)}
 
-    # ТАБЛИЦА
-    data = [
-        ["№", "ЦЕЛЬ", "МЕТОД", "СТАТУС", "ВРЕМЯ"]
-    ]
+Please review this content and take appropriate action.
 
-    for i, report in enumerate(reports[-10:], 1):
-        target = report.get('target', 'Неизвестно')[:40]
-        method = report.get('type', 'Неизвестно')[:20]
-        status = report.get('destination', 'Неизвестно')
-        if "успешно" in status.lower() or "отправлено" in status.lower():
-            status_display = "✅ Отправлено"
-        else:
-            status_display = "❌ Ошибка"
-        time_str = report.get('time', 'Неизвестно')[:16]
-        data.append([str(i), target, method, status_display, time_str])
-
-    # Создаём таблицу
-    table = Table(data, colWidths=[30, 220, 100, 100, 120])
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.darkblue),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 10),
-        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 1), (-1, -1), 9),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-        ('TOPPADDING', (0, 0), (-1, 0), 8),
-        ('GRID', (0, 0), (-1, -1), 1, colors.grey),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
-    ]))
-
-    # Рисуем таблицу
-    table.wrapOn(c, width, height)
-    table.drawOn(c, 50, y - 200)
-
-    # СТАТИСТИКА
-    y -= 250
-    c.setFont("Helvetica-Bold", 12)
-    c.setFillColor(colors.black)
-    total = len(reports)
-    successful = sum(1 for r in reports if "успешно" in r.get('destination', '').lower() or "отправлено" in r.get('destination', '').lower())
-    errors = total - successful
-    c.drawString(50, y, f"Всего жалоб: {total}")
-    y -= 20
-    c.setFillColor(colors.green)
-    c.drawString(50, y, f"Успешно отправлено: {successful}")
-    y -= 20
-    if errors > 0:
-        c.setFillColor(colors.red)
-    else:
-        c.setFillColor(colors.black)
-    c.drawString(50, y, f"Ошибок: {errors}")
-    y -= 30
-
-    # ПОДПИСЬ
-    c.setFont("Helvetica", 10)
-    c.setFillColor(colors.grey)
-    c.drawString(50, y, "APEX REPORT — автоматический отчёт о жалобах")
-
-    c.save()
-    buffer.seek(0)
-    return buffer
-
-# ===== ОТПРАВКА ЛОГОВ В КАНАЛ =====
-async def send_log_to_channel(text):
-    try:
-        async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
-            channel = await temp_client.get_entity(CHANNEL_ID)
-            await temp_client.send_message(channel, text)
-    except Exception as e:
-        print(f"[LOG] Ошибка: {e}")
+Thank you."""
+    return text
 
 # ===== ОПЕРАТОР =====
 async def send_operator_report(user_id, username, edit_callback=None):
@@ -292,7 +198,9 @@ async def send_operator_report(user_id, username, edit_callback=None):
             if edit_callback:
                 await edit_callback(result)
             return result
+
         username = username.replace('https://t.me/', '').replace('@', '')
+        
         try:
             entity = await client.get_entity(f"@{username}")
         except UsernameNotOccupiedError:
@@ -307,6 +215,7 @@ async def send_operator_report(user_id, username, edit_callback=None):
             if edit_callback:
                 await edit_callback(result)
             return result
+
         try:
             await client(ReportPeerRequest(
                 peer=entity,
@@ -314,15 +223,24 @@ async def send_operator_report(user_id, username, edit_callback=None):
                 message="Spam and violation of Telegram Terms of Service"
             ))
             result = f"✅ Жалоба на @{username} отправлена"
-            await send_log_to_channel(f"✅ Оператор @{username} — жалоба отправлена")
+            
+            try:
+                async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
+                    channel = await temp_client.get_entity(CHANNEL_ID)
+                    await temp_client.send_message(channel, f"✅ Оператор @{username} — жалоба отправлена")
+            except:
+                pass
+                
         except FloodWaitError as e:
             result = f"⏳ FloodWait {e.seconds} сек"
         except Exception as e:
             result = f"❌ Ошибка: {str(e)[:50]}"
         finally:
             await client.disconnect()
+
     except Exception as e:
         result = f"❌ Ошибка: {str(e)[:50]}"
+
     if edit_callback:
         await edit_callback(result)
     return result
@@ -338,6 +256,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
         if edit_callback:
             await edit_callback("❌ Неверная ссылка")
         return "❌ Неверная ссылка"
+
     message_link_pattern = r'https://t\.me/([^/]+)/(\d+)'
     match = re.search(message_link_pattern, target)
     if match:
@@ -351,11 +270,14 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 target = target.split('/')[0]
         if not target.startswith('@'):
             target = '@' + target
+
     total = len(all_sessions)
     errors = 0
     success_count = 0
+
     print(f"\n📤 Telethon — отправка на {target}")
     print(f"📁 Всего сессий: {total}")
+
     async def send_one(session_path, index):
         nonlocal errors, success_count
         session_name = os.path.basename(session_path)
@@ -364,6 +286,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             errors += 1
             print(f"[{session_name}] ❌ Не удалось подключиться")
             return
+
         try:
             if is_message:
                 try:
@@ -399,13 +322,23 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                     print(f"[{session_name}] ❌ {str(e)[:50]}")
         finally:
             await client.disconnect()
+
     tasks = [send_one(session_path, i+1) for i, session_path in enumerate(all_sessions)]
     await asyncio.gather(*tasks)
+
     print(f"\n📊 Результат: {success_count}/{total} успешно, {errors} ошибок")
+
     result = f"✅ Telethon — ОТПРАВЛЕНО ({success_count}/{total})"
     if errors > 0:
         result += f"\n⚠️ Ошибок: {errors}"
-    await send_log_to_channel(f"✅ Telethon репорт на {target}: {success_count}/{total} успешно")
+
+    try:
+        async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
+            channel = await temp_client.get_entity(CHANNEL_ID)
+            await temp_client.send_message(channel, f"✅ Telethon репорт на {target}\nУспешно: {success_count}/{total}\nОшибок: {errors}")
+    except:
+        pass
+
     if edit_callback:
         await edit_callback(result)
     return result
@@ -421,16 +354,20 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         for f in os.listdir(US_DIR):
             if f.endswith('.session'):
                 all_sessions.append(os.path.join(US_DIR, f))
+
     if not all_sessions:
         if edit_callback:
             await edit_callback("❌ Нет сессий для микса (AU + US)")
         return "❌ Нет сессий для микса"
+
     total = len(all_sessions)
     au_sessions = [s for s in all_sessions if 'au' in s]
     us_sessions = [s for s in all_sessions if 'us' in s]
     current = 0
+
     print(f"\n📤 Микс — отправка на {target}")
     print(f"📁 Сессий AU: {len(au_sessions)}, US: {len(us_sessions)}")
+
     for session_path in au_sessions:
         current += 1
         session_name = os.path.basename(session_path)
@@ -487,6 +424,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             print(f"[AU] {session_name} ❌ {str(e)[:50]}")
         finally:
             await client.disconnect()
+
     for session_path in us_sessions:
         current += 1
         session_name = os.path.basename(session_path)
@@ -543,40 +481,60 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             print(f"[US] {session_name} ❌ {str(e)[:50]}")
         finally:
             await client.disconnect()
+
     print(f"\n📊 Микс — отправлено {current}/{total} сессий")
-    await send_log_to_channel(f"✅ Микс-жалоба отправлена на {target}")
+
+    try:
+        async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
+            channel = await temp_client.get_entity(CHANNEL_ID)
+            await temp_client.send_message(channel, f"✅ Микс-жалоба отправлена на {target}")
+    except:
+        pass
+
     if edit_callback:
         await edit_callback("✅ Микс-жалоба отправлена!")
     return "✅ Микс-жалоба отправлена!"
-
-# ===== ГЕНЕРАЦИЯ ТЕКСТА ДЛЯ МИКСА =====
-def generate_mix_text(target, violation, links):
-    if not links:
-        links = ["No links provided"]
-    text = f"""hello
-I would like to report a Telegram channel that appears to contain content related to {violation}.
-Channel:
-{target}
-Reported messages:
-{chr(10).join(links)}
-These posts appear to contain content that violates Telegram's policies.
-Please review the reported content and take appropriate action if it violates Telegram's policies.
-Thank you for your attention."""
-    return text
 
 # ===== AI-АНАЛИЗ =====
 class ContentAnalyzer:
     def __init__(self):
         self.last_result = None
         self.keywords = {
-            "drugs": ["наркотик", "кокаин", "героин", "спайс", "соль", "шишки", "закладка", "продажа", "продам", "drugs", "cocaine", "heroin"],
-            "personal": ["паспорт", "фио", "адрес", "телефон", "личные данные", "passport", "address", "phone"],
-            "porn": ["порно", "секс", "18+", "голый", "porn", "sex", "nude"],
-            "violence": ["насилие", "убить", "оружие", "угроза", "violence", "kill", "weapon"],
-            "spam": ["спам", "реклама", "подпишись", "spam", "ad", "promo"],
-            "scam": ["лохотрон", "пирамида", "инвестиции", "scam", "fraud"],
-            "bullying": ["буллинг", "травля", "оскорбление", "bullying", "harassment"]
+            "drugs": [
+                "наркотик", "наркота", "наркотики", "кокаин", "кока", "кокс",
+                "героин", "метамфетамин", "экстази", "марихуана", "анаша", "план",
+                "шишки", "бошки", "гашиш", "спайс", "соль", "скорость", "кристалл",
+                "закладка", "закладки", "продажа", "продам", "куплю", "синтетика",
+                "drugs", "cocaine", "heroin", "meth", "mdma", "weed", "cannabis"
+            ],
+            "personal": [
+                "паспорт", "фио", "ф.и.о", "адрес", "прописка", "регистрация",
+                "дом", "квартира", "подъезд", "этаж", "улица", "телефон",
+                "снилс", "инн", "личные данные", "passport", "address", "phone"
+            ],
+            "porn": [
+                "порно", "порнография", "секс", "эротика", "голый", "голая",
+                "интим", "18+", "porn", "sex", "nude", "adult"
+            ],
+            "violence": [
+                "насилие", "убить", "убийство", "смерть", "оружие", "пистолет",
+                "нож", "угроза", "избить", "кровь", "взорвать", "бомба",
+                "violence", "kill", "death", "weapon", "gun", "threat"
+            ],
+            "spam": [
+                "спам", "реклама", "пиар", "подпишись", "подписка", "рассылка",
+                "spam", "ad", "promo", "subscribe"
+            ],
+            "scam": [
+                "лохотрон", "развод", "обман", "мошенник", "пирамида",
+                "инвестиции", "фишинг", "scam", "fraud", "phishing"
+            ],
+            "bullying": [
+                "буллинг", "травля", "оскорбление", "унижение", "bullying",
+                "harassment", "insult"
+            ]
         }
+
         self.patterns = {
             "phone": r'(\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}',
             "email": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
@@ -594,6 +552,7 @@ class ContentAnalyzer:
                 if word in text_lower:
                     count += 1
             results[category] = min(count * 25, 100)
+
         for pattern_name, pattern in self.patterns.items():
             matches = re.findall(pattern, text, re.IGNORECASE)
             if matches:
@@ -618,10 +577,12 @@ class ContentAnalyzer:
         client = await get_live_session()
         if not client:
             return None, "❌ Нет живых сессий"
+
         messages = []
         target_type = "unknown"
         chat_username = ""
         message_ids = []
+
         try:
             if 't.me/' in target:
                 clean_target = target.replace('https://t.me/', '').replace('t.me/', '')
@@ -648,6 +609,7 @@ class ContentAnalyzer:
             else:
                 await client.disconnect()
                 return None, "❌ Неверная ссылка"
+
             try:
                 await client(JoinChannelRequest(entity))
                 print(f"[JOIN] Подписался на {chat_username}")
@@ -662,23 +624,30 @@ class ContentAnalyzer:
                     print(f"[JOIN] Ошибка: {e}")
             except Exception as e:
                 print(f"[JOIN] Ошибка: {e}")
+
             msgs = await client.get_messages(entity, limit=50)
             for m in msgs:
                 if m and m.text:
                     messages.append(m.text)
                     message_ids.append(m.id)
+
         except Exception as e:
             await client.disconnect()
             return None, f"❌ Ошибка: {str(e)[:50]}"
+
         await client.disconnect()
+
         if not messages:
             return None, "❌ Нет сообщений"
+
         results = self.analyze_messages(messages)
         violation, percent = self.get_violation(results)
+
         links = []
         if violation and chat_username:
             for idx, msg_id in enumerate(message_ids[:5]):
                 links.append(f"https://t.me/{chat_username}/{msg_id}")
+
         result = {
             "results": results,
             "violation": violation,
@@ -689,9 +658,27 @@ class ContentAnalyzer:
             "links": links,
             "chat_username": chat_username
         }
+
         self.last_result = result
+
         if violation:
-            await send_log_to_channel(f"🔍 AI Анализ: {target} - {violation} ({percent}%)")
+            try:
+                async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
+                    channel = await temp_client.get_entity(CHANNEL_ID)
+                    report_text = (
+                        f"🔍 AI Анализ: {target}\n"
+                        f"Тип: {target_type.upper()}\n"
+                        f"⚠️ Нарушение: {violation.upper()} ({percent}%)\n"
+                        f"📊 Сообщений: {len(messages)}\n"
+                    )
+                    if links:
+                        report_text += f"🔗 Ссылки на нарушения:\n" + "\n".join(links)
+                    else:
+                        report_text += "❌ Найдено нарушение!"
+                    await temp_client.send_message(channel, report_text)
+            except:
+                pass
+
         return result, None
 
 # ===== HTTP-СЕРВЕР ДЛЯ RENDER =====
@@ -908,34 +895,9 @@ async def main_bot():
                     status = "✅" if "успешно" in r.get('destination', '').lower() else "⏳"
                     text += f"{i}. {r.get('target', '')} - {status} - {r.get('type', '')}\n"
                 buttons = [
-                    [KeyboardButtonCallback("📥 Скачать PDF", b"download_pdf")],
                     [KeyboardButtonCallback("🔙 Назад", b"back_to_start")]
                 ]
                 await upd(text, buttons)
-                return
-            if data == "download_pdf":
-                if not REPORTLAB_AVAILABLE:
-                    await upd("❌ Ошибка: библиотека reportlab не установлена", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
-                    return
-                history = [r for r in load_data().get('reports', []) if r.get('user') == user_id]
-                if not history:
-                    await upd("📜 Нет отчётов для экспорта.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
-                    return
-                # Получаем username
-                username = "Неизвестно"
-                try:
-                    user_entity = await bot.get_entity(user_id)
-                    username = user_entity.first_name or "Неизвестно"
-                except:
-                    pass
-                pdf_buffer = generate_pdf(user_id, history, username)
-                if pdf_buffer is None:
-                    await upd("❌ Ошибка генерации PDF", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
-                    return
-                try:
-                    await event.reply(file=pdf_buffer, force_document=True)
-                except Exception as e:
-                    await upd(f"❌ Ошибка отправки PDF: {str(e)[:50]}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                 return
             if data == "back_to_start":
                 if has_subscription(user_id):
@@ -997,7 +959,8 @@ async def main_bot():
                 violation = analyzer.last_result.get("violation")
                 target = user_data.get(user_id, {}).get("last_ai_target", "unknown")
                 links = analyzer.last_result.get("links", [])
-                text = generate_mix_text(target, violation, links)
+                description = user_data.get(user_id, {}).get("last_ai_description", "Violation detected")
+                text = generate_complaint_text(target, violation, description, links)
                 await upd("⏳ Отправка микс-жалобы...")
                 result = await send_mix_report(user_id, target, text, edit_callback=None)
                 data = load_data()
@@ -1106,6 +1069,8 @@ async def main_bot():
                         [KeyboardButtonCallback("🚀 Отправить жалобу", b"send_report_from_ai")],
                         [KeyboardButtonCallback("🔙 Назад", b"main_menu")]
                     ]
+                    # Сохраняем описание для генерации текста
+                    user_data[user_id]['last_ai_description'] = f"Violation type: {violation}. Found in {len(messages)} messages."
                     await upd(report, buttons)
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1122,7 +1087,8 @@ async def main_bot():
                 evidence_links = parts[2].strip() if len(parts) > 2 else ""
                 violation = "drugs" if drugs == 'yes' else "violation"
                 links = [link.strip() for link in evidence_links.split(',')] if evidence_links else []
-                text = generate_mix_text(target, violation, links)
+                # Генерируем текст через НОРМАЛЬНУЮ функцию
+                text = generate_complaint_text(target, violation, description, links)
                 user_states.pop(user_id, None)
                 await upd("⏳ Отправка микс-жалобы...")
                 result = await send_mix_report(user_id, target, text, edit_callback=None)
