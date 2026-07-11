@@ -615,6 +615,7 @@ class AIAnalyzer:
         message_ids = []
 
         try:
+            # --- ОБРАБОТКА ПРИГЛАСИТЕЛЬНЫХ ССЫЛОК ---
             if 't.me/joinchat' in target or 't.me/+' in target:
                 try:
                     await client.join_channel(target)
@@ -624,23 +625,37 @@ class AIAnalyzer:
                     await client.disconnect()
                     return None, f"❌ Не удалось присоединиться по ссылке: {str(e)[:50]}"
 
+            # --- ПОЛУЧЕНИЕ СУЩНОСТИ ---
+            entity = None
             if 't.me/' in target:
-                if 'joinchat' not in target and '+' not in target:
-                    chat_username = target.replace('https://t.me/', '').split('/')[0]
-                    entity = await client.get_entity(f"@{chat_username}")
-                    target_type = "канал"
+                clean_target = target.replace('https://t.me/', '').replace('t.me/', '')
+                if '/' in clean_target and not clean_target.startswith('joinchat') and not clean_target.startswith('+'):
+                    chat_username = clean_target.split('/')[0]
+                    try:
+                        entity = await client.get_entity(f"@{chat_username}")
+                    except:
+                        entity = await client.get_entity(target)
                 else:
-                    entity = await client.get_entity(target)
-                    chat_username = getattr(entity, 'username', 'unknown')
-                    target_type = "канал"
+                    try:
+                        entity = await client.get_entity(target)
+                        chat_username = getattr(entity, 'username', 'unknown')
+                    except:
+                        chat_username = clean_target.split('/')[0] if '/' in clean_target else clean_target
+                        entity = await client.get_entity(f"@{chat_username}")
+                target_type = "канал"
             elif target.startswith('@'):
                 chat_username = target.replace('@', '')
                 entity = await client.get_entity(target)
                 target_type = "бот" if entity.bot else "пользователь"
             else:
                 await client.disconnect()
-                return None, "❌ Неверная ссылка"
+                return None, "❌ Неверная ссылка. Отправьте ссылку на канал (https://t.me/...)"
 
+            if not entity:
+                await client.disconnect()
+                return None, "❌ Не удалось получить информацию о канале. Проверьте ссылку."
+
+            # --- ПОДПИСКА НА КАНАЛ ---
             try:
                 await client(JoinChannelRequest(entity))
                 print(f"[JOIN] Подписался на {chat_username}")
@@ -682,6 +697,7 @@ class AIAnalyzer:
                     await client.disconnect()
                     return None, f"❌ Не удалось подписаться или отправить заявку: {str(e)[:50]}"
 
+            # --- ЕСЛИ ЭТО БОТ ---
             if target_type == "бот":
                 try:
                     await client.send_message(entity, '/start')
@@ -689,12 +705,23 @@ class AIAnalyzer:
                 except:
                     pass
 
-            msgs = await client.get_messages(entity, limit=50)
-            for m in msgs:
-                if m and m.text:
-                    messages.append(m.text)
-                    message_ids.append(m.id)
+            # --- ЧИТАЕМ СООБЩЕНИЯ ---
+            try:
+                msgs = await client.get_messages(entity, limit=50)
+                if not msgs:
+                    await client.disconnect()
+                    return None, "❌ Нет сообщений в канале"
+                for m in msgs:
+                    if m and m.text:
+                        messages.append(m.text)
+                        message_ids.append(m.id)
+            except Exception as e:
+                await client.disconnect()
+                return None, f"❌ Не удалось прочитать сообщения: {str(e)[:50]}"
 
+        except UsernameNotOccupiedError:
+            await client.disconnect()
+            return None, f"❌ Канал {target} не найден. Проверьте ссылку."
         except Exception as e:
             await client.disconnect()
             return None, f"❌ Ошибка: {str(e)[:50]}"
@@ -704,6 +731,7 @@ class AIAnalyzer:
         if not messages:
             return None, "❌ Нет сообщений"
 
+        # --- АНАЛИЗ ЧЕРЕЗ AI ---
         result = await analyze_with_ai(messages, target)
         
         if result.get("error"):
