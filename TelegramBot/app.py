@@ -49,7 +49,7 @@ REQUESTS_FILE = os.path.join(BASE_DIR, 'requests.json')
 
 _subs_cache = {}
 _subs_cache_time = 0
-pending_requests = {}  # ГЛОБАЛЬНЫЙ СЛОВАРЬ ДЛЯ ЗАЯВОК
+pending_requests = {}
 
 # ===== РАБОТА С ДАННЫМИ =====
 def load_data():
@@ -572,7 +572,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         await edit_callback("✅ Микс-жалоба отправлена!")
     return "✅ Микс-жалоба отправлена!"
 
-# ===== AI-АНАЛИЗ (ИСПРАВЛЕННЫЙ) =====
+# ===== AI-АНАЛИЗ =====
 class AIAnalyzer:
     def __init__(self):
         self.last_result = None
@@ -615,16 +615,6 @@ class AIAnalyzer:
         message_ids = []
 
         try:
-            # --- ОБРАБОТКА ПРИГЛАСИТЕЛЬНЫХ ССЫЛОК ---
-            if 't.me/joinchat' in target or 't.me/+' in target:
-                try:
-                    await client.join_channel(target)
-                    print(f"[JOIN] Присоединился по ссылке")
-                    await asyncio.sleep(3)
-                except Exception as e:
-                    await client.disconnect()
-                    return None, f"❌ Не удалось присоединиться по ссылке: {str(e)[:50]}"
-
             # --- ПОЛУЧЕНИЕ СУЩНОСТИ ---
             entity = None
             if 't.me/' in target:
