@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ПОЛНАЯ ВЕРСИЯ)
+# app.py — APEX REPORT (PDF РАБОТАЕТ)
 import os
 import sys
 import json
@@ -7,13 +7,19 @@ import re
 import random
 import time
 from datetime import datetime, timedelta
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from io import BytesIO
+
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from io import BytesIO
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
+    print("[WARN] reportlab не установлен. PDF не будет работать.")
 
 try:
     from telethon import TelegramClient, events, errors
-    from telethon.tl.types import KeyboardButtonCallback
+    from telethon.tl.types import KeyboardButtonCallback, InputFile
     from telethon.tl.functions.account import ReportPeerRequest
     from telethon.tl.functions.channels import JoinChannelRequest
     from telethon.tl.types import InputReportReasonSpam
@@ -173,6 +179,9 @@ async def get_live_session():
 
 # ===== ГЕНЕРАЦИЯ PDF =====
 def generate_pdf(user_id, reports):
+    if not REPORTLAB_AVAILABLE:
+        return None
+    
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
@@ -522,7 +531,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         await edit_callback("✅ Микс-жалоба отправлена!")
     return "✅ Микс-жалоба отправлена!"
 
-# ===== ГЕНЕРАЦИЯ ТЕКСТА ДЛЯ МИКСА (ТОЛЬКО ЭТО НА АНГЛИЙСКОМ) =====
+# ===== ГЕНЕРАЦИЯ ТЕКСТА ДЛЯ МИКСА =====
 def generate_mix_text(target, violation, links):
     if not links:
         links = ["No links provided"]
@@ -538,7 +547,7 @@ Please review the reported content and take appropriate action if it violates Te
 Thank you for your attention."""
     return text
 
-# ===== AI-АНАЛИЗ (ТОЛЬКО ФОЛБЭК) =====
+# ===== AI-АНАЛИЗ =====
 class ContentAnalyzer:
     def __init__(self):
         self.last_result = None
@@ -937,12 +946,24 @@ async def main_bot():
                 return
 
             if data == "download_pdf":
+                if not REPORTLAB_AVAILABLE:
+                    await upd("❌ Ошибка: библиотека reportlab не установлена", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
+                    return
+                
                 history = [r for r in load_data().get('reports', []) if r.get('user') == user_id]
                 if not history:
                     await upd("📜 Нет отчётов для экспорта.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
+                
                 pdf_buffer = generate_pdf(user_id, history)
-                await event.reply(file=pdf_buffer, file_name=f"history_{user_id}.pdf")
+                if pdf_buffer is None:
+                    await upd("❌ Ошибка генерации PDF", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
+                    return
+                
+                try:
+                    await event.reply(file=pdf_buffer, file_name=f"history_{user_id}.pdf")
+                except Exception as e:
+                    await upd(f"❌ Ошибка отправки PDF: {str(e)[:50]}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                 return
 
             if data == "back_to_start":
