@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ)
+# app.py — APEX REPORT (ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ)
 import os
 import sys
 import json
@@ -49,7 +49,7 @@ REQUESTS_FILE = os.path.join(BASE_DIR, 'requests.json')
 
 _subs_cache = {}
 _subs_cache_time = 0
-pending_requests = {}  # ГЛОБАЛЬНЫЙ СЛОВАРЬ ДЛЯ ЗАЯВОК
+pending_requests = {}
 
 # ===== РАБОТА С ДАННЫМИ =====
 def load_data():
@@ -173,7 +173,6 @@ async def get_live_session():
 
 # ===== AI-АНАЛИЗ ЧЕРЕЗ POLLINATIONS AI =====
 async def analyze_with_ai(texts, target, single=False):
-    """Отправляет текст в Pollinations AI и возвращает JSON"""
     if single:
         messages_text = texts[0] if texts else "Пустое сообщение"
         prompt = f"""Analyze this single message from Telegram and determine if it violates Telegram's Terms of Service.
@@ -236,7 +235,6 @@ Format:
 
 # ===== ГЕНЕРАЦИЯ ТЕКСТА ЖАЛОБЫ =====
 async def generate_complaint_text(target, violation, description, links):
-    """Генерирует нормальный текст жалобы без URGENT через AI"""
     if not links:
         links = ["No specific links provided"]
     
@@ -617,7 +615,6 @@ class AIAnalyzer:
         message_ids = []
 
         try:
-            # Обработка пригласительных ссылок
             if 't.me/joinchat' in target or 't.me/+' in target:
                 try:
                     await client.join_channel(target)
@@ -627,7 +624,6 @@ class AIAnalyzer:
                     await client.disconnect()
                     return None, f"❌ Не удалось присоединиться по ссылке: {str(e)[:50]}"
 
-            # Получение сущности
             if 't.me/' in target:
                 if 'joinchat' not in target and '+' not in target:
                     chat_username = target.replace('https://t.me/', '').split('/')[0]
@@ -645,17 +641,14 @@ class AIAnalyzer:
                 await client.disconnect()
                 return None, "❌ Неверная ссылка"
 
-            # Подписка на канал
             try:
                 await client(JoinChannelRequest(entity))
                 print(f"[JOIN] Подписался на {chat_username}")
                 await asyncio.sleep(3)
             except ChannelPrivateError:
-                # Канал закрытый — отправляем заявку
                 try:
                     await client.send_message(entity, "Заявка на вступление")
                     print(f"[JOIN] Отправлена заявка в {chat_username}")
-                    # Сохраняем задачу в глобальном словаре
                     global pending_requests
                     pending_requests[user_id] = {
                         "target": target,
@@ -672,7 +665,6 @@ class AIAnalyzer:
                     await client.disconnect()
                     return None, f"❌ Ошибка при отправке заявки: {str(e)[:50]}"
             except Exception as e:
-                # Если ошибка — пробуем отправить заявку
                 try:
                     await client.send_message(entity, "Заявка на вступление")
                     print(f"[JOIN] Отправлена заявка в {chat_username}")
@@ -692,7 +684,6 @@ class AIAnalyzer:
                     await client.disconnect()
                     return None, f"❌ Не удалось подписаться или отправить заявку: {str(e)[:50]}"
 
-            # Если это бот — нажимаем /start
             if target_type == "бот":
                 try:
                     await client.send_message(entity, '/start')
@@ -700,7 +691,6 @@ class AIAnalyzer:
                 except:
                     pass
 
-            # Читаем сообщения с реальными ID
             msgs = await client.get_messages(entity, limit=50)
             for m in msgs:
                 if m and m.text:
@@ -716,10 +706,8 @@ class AIAnalyzer:
         if not messages:
             return None, "❌ Нет сообщений"
 
-        # АНАЛИЗ ЧЕРЕЗ AI
         result = await analyze_with_ai(messages, target)
         
-        # Если AI не сработал — фолбэк
         if result.get("error"):
             print(f"[AI] Ошибка: {result['error']}, используем фолбэк")
             results = self.fallback_analyze(" ".join(messages))
@@ -737,13 +725,11 @@ class AIAnalyzer:
             else:
                 result = {"violation": None, "severity": None, "explanation": "Нарушений не найдено.", "links": []}
 
-        # Формируем ссылки, если их нет
         if result.get("violation") and not result.get("links") and chat_username:
             result["links"] = [f"https://t.me/{chat_username}/{msg_id}" for msg_id in message_ids[:5]]
 
         self.last_result = result
 
-        # Отправляем в канал
         if result.get("violation"):
             try:
                 async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
@@ -766,7 +752,6 @@ class AIAnalyzer:
         return result, None
 
     async def check_pending_requests(self, bot_instance):
-        """Фоновый процесс: проверяет заявки каждые 10 секунд"""
         global pending_requests
         while True:
             try:
@@ -775,20 +760,16 @@ class AIAnalyzer:
                     if req.get("status") != "waiting":
                         continue
                     
-                    # Пробуем подключиться и прочитать канал
                     client = await try_connect(req["client_filename"], timeout=10, retries=1)
                     if not client:
                         continue
                     
                     try:
-                        # Пробуем прочитать сообщения
                         msgs = await client.get_messages(req["entity"], limit=1)
                         if msgs:
-                            # Заявка одобрена!
                             req["status"] = "approved"
                             print(f"[JOIN] Заявка для {req['chat_username']} одобрена!")
                             
-                            # Анализируем канал
                             messages = []
                             message_ids = []
                             all_msgs = await client.get_messages(req["entity"], limit=50)
@@ -818,7 +799,6 @@ class AIAnalyzer:
                                 if result.get("violation") and not result.get("links") and req["chat_username"]:
                                     result["links"] = [f"https://t.me/{req['chat_username']}/{msg_id}" for msg_id in message_ids[:5]]
                                 
-                                # Отправляем результат пользователю
                                 if result.get("violation"):
                                     report = f"🔍 AI-АНАЛИЗ\n\nЦель: {req['target']}\nТип: КАНАЛ\nНарушение: {result['violation'].upper()} ({result.get('severity', 'medium').upper()})\nОбъяснение: {result.get('explanation', '')}\n"
                                     if result.get("links"):
@@ -1011,7 +991,6 @@ async def main_bot():
         active_messages = {}
         analyzer = AIAnalyzer()
         
-        # Запускаем фоновый процесс проверки заявок
         asyncio.create_task(analyzer.check_pending_requests(bot))
         
         async def update_message(event, text, buttons=None):
