@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ)
+# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ)
 import os
 import sys
 import json
@@ -171,7 +171,7 @@ async def get_live_session():
             return client
     return None
 
-# ===== AI-АНАЛИЗ ЧЕРЕЗ POLLINATIONS AI =====
+# ===== AI-АНАЛИЗ ЧЕРЕЗ POLLINATIONS AI (С УСИЛЕННЫМ ФОЛБЭКОМ) =====
 async def analyze_with_ai(texts, target, single=False):
     if single:
         messages_text = texts[0] if texts else "Пустое сообщение"
@@ -572,29 +572,62 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         await edit_callback("✅ Микс-жалоба отправлена!")
     return "✅ Микс-жалоба отправлена!"
 
-# ===== AI-АНАЛИЗ =====
+# ===== AI-АНАЛИЗ (С УСИЛЕННЫМ ФОЛБЭКОМ) =====
 class AIAnalyzer:
     def __init__(self):
         self.last_result = None
+        # РАСШИРЕННЫЙ СПИСОК КЛЮЧЕВЫХ СЛОВ
         self.keywords = {
-            "drugs": ["наркотик", "кокаин", "героин", "спайс", "соль", "шишки", "закладка", "продажа", "продам", "drugs", "cocaine", "heroin"],
-            "personal": ["паспорт", "фио", "адрес", "телефон", "личные данные", "passport", "address", "phone"],
-            "porn": ["порно", "секс", "18+", "голый", "porn", "sex", "nude"],
-            "violence": ["насилие", "убить", "оружие", "угроза", "violence", "kill", "weapon"],
-            "spam": ["спам", "реклама", "подпишись", "spam", "ad", "promo"],
-            "scam": ["лохотрон", "пирамида", "инвестиции", "scam", "fraud"],
-            "bullying": ["буллинг", "травля", "оскорбление", "bullying", "harassment"]
+            "drugs": [
+                "наркотик", "наркота", "наркотики", "кокаин", "кока", "кокс",
+                "героин", "метамфетамин", "экстази", "марихуана", "анаша", "план",
+                "шишки", "бошки", "гашиш", "спайс", "соль", "скорость", "кристалл",
+                "закладка", "закладки", "продажа", "продам", "куплю", "синтетика",
+                "drugs", "cocaine", "heroin", "meth", "mdma", "weed", "cannabis",
+                "трава", "порошок", "белый", "кристаллы", "меф", "амф", "экстази"
+            ],
+            "personal": ["паспорт", "фио", "ф.и.о", "адрес", "прописка", "регистрация", "дом", "квартира", "подъезд", "этаж", "улица", "телефон", "снилс", "инн", "личные данные", "passport", "address", "phone"],
+            "porn": ["порно", "порнография", "секс", "эротика", "голый", "голая", "интим", "18+", "porn", "sex", "nude", "adult"],
+            "violence": ["насилие", "убить", "убийство", "смерть", "оружие", "пистолет", "нож", "угроза", "избить", "кровь", "взорвать", "бомба", "violence", "kill", "death", "weapon", "gun", "threat"],
+            "spam": ["спам", "реклама", "пиар", "подпишись", "подписка", "рассылка", "spam", "ad", "promo", "subscribe"],
+            "scam": ["лохотрон", "развод", "обман", "мошенник", "пирамида", "инвестиции", "фишинг", "scam", "fraud", "phishing"],
+            "bullying": ["буллинг", "травля", "оскорбление", "унижение", "bullying", "harassment", "insult"]
+        }
+
+        self.patterns = {
+            "phone": r'(\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}',
+            "email": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+            "passport": r'[0-9]{4}\s?[0-9]{6}',
+            "address": r'(г|гор|город|ул|улица|пр|проспект|пер|переулок|бул|бульвар|д|дом|кв|квартира)[\.\s]',
+            "fio": r'[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+'
         }
 
     def fallback_analyze(self, text):
+        """Усиленный фолбэк: ищет ключевые слова и паттерны"""
         text_lower = text.lower()
         results = {}
+        
+        # Ищем ключевые слова
         for category, words in self.keywords.items():
             count = 0
             for word in words:
                 if word in text_lower:
                     count += 1
-            results[category] = min(count * 25, 100)
+            # Если найдено хоть одно слово — даём высокий процент
+            if count > 0:
+                results[category] = min(50 + (count * 10), 100)
+            else:
+                results[category] = 0
+        
+        # Ищем паттерны
+        for pattern_name, pattern in self.patterns.items():
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                cat_map = {"phone": "personal", "email": "personal", "passport": "personal", "address": "personal", "fio": "personal"}
+                if pattern_name in cat_map:
+                    cat = cat_map[pattern_name]
+                    results[cat] = min(results.get(cat, 0) + 30, 100)
+        
         return results
 
     def get_violation(self, results):
@@ -721,18 +754,19 @@ class AIAnalyzer:
         if not messages:
             return None, "❌ Нет сообщений"
 
-        # --- АНАЛИЗ ЧЕРЕЗ AI ---
+        # --- АНАЛИЗ: СНАЧАЛА ПЫТАЕМСЯ ЧЕРЕЗ AI ---
         result = await analyze_with_ai(messages, target)
         
-        if result.get("error"):
-            print(f"[AI] Ошибка: {result['error']}, используем фолбэк")
+        # --- ЕСЛИ AI НЕ СРАБОТАЛ ИЛИ НЕ НАШЁЛ НАРУШЕНИЕ, ИСПОЛЬЗУЕМ УСИЛЕННЫЙ ФОЛБЭК ---
+        if result.get("error") or not result.get("violation"):
+            print(f"[AI] Ошибка или нарушение не найдено, используем усиленный фолбэк")
             results = self.fallback_analyze(" ".join(messages))
             violation, percent = self.get_violation(results)
             if violation:
                 result = {
                     "violation": violation,
-                    "severity": "medium",
-                    "explanation": f"Найдено нарушение типа {violation} по ключевым словам",
+                    "severity": "high" if percent >= 70 else "medium",
+                    "explanation": f"Найдено нарушение типа {violation} по ключевым словам (уверенность {percent}%)",
                     "links": []
                 }
                 if chat_username:
@@ -741,11 +775,13 @@ class AIAnalyzer:
             else:
                 result = {"violation": None, "severity": None, "explanation": "Нарушений не найдено.", "links": []}
 
+        # --- ДОБАВЛЯЕМ ССЫЛКИ, ЕСЛИ ИХ НЕТ ---
         if result.get("violation") and not result.get("links") and chat_username:
             result["links"] = [f"https://t.me/{chat_username}/{msg_id}" for msg_id in message_ids[:5]]
 
         self.last_result = result
 
+        # --- ОТПРАВКА В КАНАЛ ---
         if result.get("violation"):
             try:
                 async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
@@ -795,14 +831,14 @@ class AIAnalyzer:
                             
                             if messages:
                                 result = await analyze_with_ai(messages, req["target"])
-                                if result.get("error"):
+                                if result.get("error") or not result.get("violation"):
                                     results = self.fallback_analyze(" ".join(messages))
                                     violation, percent = self.get_violation(results)
                                     if violation:
                                         result = {
                                             "violation": violation,
-                                            "severity": "medium",
-                                            "explanation": f"Найдено нарушение типа {violation} по ключевым словам",
+                                            "severity": "high" if percent >= 70 else "medium",
+                                            "explanation": f"Найдено нарушение типа {violation} по ключевым словам (уверенность {percent}%)",
                                             "links": []
                                         }
                                         if req["chat_username"]:
@@ -844,14 +880,14 @@ class AIAnalyzer:
 
     async def analyze_single_message(self, message_text, link):
         result = await analyze_with_ai([message_text], link, single=True)
-        if result.get("error"):
+        if result.get("error") or not result.get("violation"):
             results = self.fallback_analyze(message_text)
             violation, percent = self.get_violation(results)
             if violation:
                 result = {
                     "violation": violation,
-                    "severity": "medium",
-                    "explanation": f"Найдено нарушение типа {violation} по ключевым словам",
+                    "severity": "high" if percent >= 70 else "medium",
+                    "explanation": f"Найдено нарушение типа {violation} по ключевым словам (уверенность {percent}%)",
                     "links": [link]
                 }
             else:
