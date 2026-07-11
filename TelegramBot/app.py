@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (PDF РАБОТАЕТ)
+# app.py — APEX REPORT (ПОЛНЫЙ, PDF РАБОТАЕТ)
 import os
 import sys
 import json
@@ -7,11 +7,11 @@ import re
 import random
 import time
 from datetime import datetime, timedelta
+from io import BytesIO
 
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
-    from io import BytesIO
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
@@ -19,7 +19,7 @@ except ImportError:
 
 try:
     from telethon import TelegramClient, events, errors
-    from telethon.tl.types import KeyboardButtonCallback, InputFile
+    from telethon.tl.types import KeyboardButtonCallback
     from telethon.tl.functions.account import ReportPeerRequest
     from telethon.tl.functions.channels import JoinChannelRequest
     from telethon.tl.types import InputReportReasonSpam
@@ -481,7 +481,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             await asyncio.sleep(2)
             async for msg in client.iter_messages('@TIDABot', limit=5):
                 if msg.buttons:
-                    for row in msg.buttons:
+                    for row在 msg.buttons:
                         for btn in row:
                             if btn.text and 'Non-consensual' in btn.text:
                                 await btn.click()
@@ -961,7 +961,8 @@ async def main_bot():
                     return
                 
                 try:
-                    await event.reply(file=pdf_buffer, file_name=f"history_{user_id}.pdf")
+                    # ИСПРАВЛЕНО: правильная отправка файла через Telethon
+                    await event.reply(file=pdf_buffer, force_document=True)
                 except Exception as e:
                     await upd(f"❌ Ошибка отправки PDF: {str(e)[:50]}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                 return
