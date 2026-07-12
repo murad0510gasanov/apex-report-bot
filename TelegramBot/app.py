@@ -60,7 +60,7 @@ ERROR_LOG = os.path.join(BASE_DIR, 'errors.log')
 _subs_cache = {}
 _subs_cache_time = 0
 pending_requests = {}
-bot_instance = None  # ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ ДЛЯ БОТА
+bot_instance = None
 
 def log_error(msg):
     try:
@@ -146,7 +146,6 @@ async def send_log_to_channel(
     status: str = "✅ Отправка завершена",
     error: str = None
 ):
-    """Отправляет структурированный лог в канал"""
     global bot_instance
     if not bot_instance:
         return
@@ -174,6 +173,8 @@ async def send_log_to_channel(
             if tida_text:
                 log_text += f"\n📝 TIDA текст:\n{tida_text}\n"
         elif method in ["Telethon", "Оператор"]:
+            log_text += f"📊 Результат: {au_success}/{au_total}\n"
+        elif method == "Веб-жалоба":
             log_text += f"📊 Результат: {au_success}/{au_total}\n"
     try:
         await bot_instance.send_message(CHANNEL_ID, log_text)
@@ -553,12 +554,11 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
 
     print(f"\n📊 Микс — отправлено {current}/{total} сессий")
     
-    # Логируем результат
     au_text_full = "\n".join(au_texts[:1]) if au_texts else None
     tida_text_full = "\n".join(tida_texts[:1]) if tida_texts else None
     await send_log_to_channel(
         user_id=user_id,
-        username=None,  # будет передан из main_bot
+        username=None,
         method="Микс",
         target=target,
         au_success=au_success,
@@ -571,40 +571,15 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
     )
     return "✅ Микс-жалоба отправлена!"
 
+# ===== ОПЕРАТОР (ТОЛЬКО МИКС) =====
 async def send_operator_report(user_id, username, edit_callback=None):
-    result = None
     try:
         username = username.replace('https://t.me/', '').replace('@', '')
         target = f"@{username}"
-        phone = generate_phone()
-        name = "Operator Report"
-        text = f"This account is an operator of a drug shop."
+        text = f"This account @{username} is a known operator of a drug shop. It violates Telegram's Terms of Service by facilitating the sale of illegal substances."
         
-        # 1) Пробуем веб-метод
-        success, msg = await send_web_report(RUCAPTCHA_API_KEY, name, phone, text)
-        if success:
-            result = f"✅ Оператор {username} — жалоба отправлена (веб)"
-            await send_log_to_channel(
-                user_id=user_id,
-                username=None,
-                method="Оператор",
-                target=target,
-                au_success=1,
-                au_total=1,
-                status="✅ Отправка завершена (веб)"
-            )
-            if edit_callback:
-                await edit_callback(result)
-            return result
-        
-        # 2) Если веб не сработал — пробуем Микс
-        print(f"[OPERATOR] Веб не сработал: {msg}. Пробуем Микс...")
-        if edit_callback:
-            await edit_callback("⏳ Веб-метод не сработал. Пытаюсь через Микс...")
-        
-        mix_result = await send_mix_report(user_id, target, text, edit_callback=None)
-        if "✅" in mix_result:
-            result = f"✅ Оператор {username} — жалоба отправлена (микс)"
+        result = await send_mix_report(user_id, target, text, edit_callback=None)
+        if "✅" in result:
             await send_log_to_channel(
                 user_id=user_id,
                 username=None,
@@ -612,23 +587,23 @@ async def send_operator_report(user_id, username, edit_callback=None):
                 target=target,
                 au_success=1,
                 au_total=1,
-                status="✅ Отправка завершена (микс)"
+                status="✅ Отправка завершена"
             )
+            if edit_callback:
+                await edit_callback(f"✅ Оператор {username} — жалоба отправлена (микс)")
+            return f"✅ Оператор {username} — жалоба отправлена (микс)"
         else:
-            result = f"❌ Оператор {username} — не удалось отправить жалобу"
             await send_log_to_channel(
                 user_id=user_id,
                 username=None,
-                method="Оператор",
+                method="Оператор (микс)",
                 target=target,
                 status="❌ Ошибка отправки",
-                error="Не удалось отправить жалобу ни через веб, ни через микс"
+                error="Не удалось отправить жалобу через микс"
             )
-        
-        if edit_callback:
-            await edit_callback(result)
-        return result
-        
+            if edit_callback:
+                await edit_callback(f"❌ Оператор {username} — не удалось отправить жалобу")
+            return f"❌ Оператор {username} — не удалось отправить жалобу"
     except Exception as e:
         result = f"❌ Ошибка: {str(e)[:50]}"
         if edit_callback:
@@ -1167,7 +1142,7 @@ async def main_bot():
     try:
         bot = TelegramClient('bot_session', API_ID, API_HASH)
         await bot.start(bot_token=BOT_TOKEN)
-        bot_instance = bot  # СОХРАНЯЕМ БОТА В ГЛОБАЛЬНУЮ ПЕРЕМЕННУЮ
+        bot_instance = bot
         print("Bot connected")
         user_states = {}
         user_data = {}
@@ -1204,7 +1179,7 @@ async def main_bot():
             if has_subscription(user_id):
                 buttons = [
                     [KeyboardButtonCallback("📋 Меню", b"main_menu")],
-                    [KeyboardButtonCallback("👤 Профиль", b"profile"), KeyboardButtonCallback("👨‍💻 Разработчик", b"developer")],
+                    [KeyboardButtonCallback("👤 Профиль", b"profile"), KeyboardButtonCallback("🛠 Поддержка", b"support")],
                     [KeyboardButtonCallback("📜 Моя история", b"history")]
                 ]
                 await update_message(event, f"📌 {BOT_NAME}", buttons)
@@ -1232,6 +1207,7 @@ async def main_bot():
                     [KeyboardButtonCallback("⚡ Telethon", b"telethon_report")],
                     [KeyboardButtonCallback("🔍 AI-анализ", b"ai_analyze")],
                     [KeyboardButtonCallback("👤 Оператор", b"operator")],
+                    [KeyboardButtonCallback("🛠 Поддержка", b"support")],
                     [KeyboardButtonCallback("🔙 Назад", b"back_to_start")]
                 ]
                 await upd("📋 МЕНЮ", buttons)
@@ -1245,8 +1221,12 @@ async def main_bot():
                 await upd(f"👤 ПРОФИЛЬ\n\nID: {user_id}\nЮзернейм: {username}\nСтатус: {status}\nЖалоб: {len(user_reports)}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                 return
 
-            if data == "developer":
-                await upd(f"👨‍💻 РАЗРАБОТЧИК\n\n{DEVELOPER_LINK}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
+            if data == "support":
+                if not has_subscription(user_id):
+                    await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
+                    return
+                user_states[user_id] = 'waiting_support_message'
+                await upd("📩 Напишите ваш вопрос или сообщение для поддержки.\n\nМы ответим вам в ближайшее время.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if data == "history":
@@ -1254,7 +1234,6 @@ async def main_bot():
                 if not history:
                     await upd("📜 ИСТОРИЯ\n\nНет записей.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
-                # Пагинация
                 page = user_data.get(user_id, {}).get('history_page', 0)
                 items_per_page = 5
                 total_pages = max(1, (len(history) + items_per_page - 1) // items_per_page)
@@ -1281,8 +1260,7 @@ async def main_bot():
                 if user_id not in user_data:
                     user_data[user_id] = {}
                 user_data[user_id]['history_page'] = page
-                # Перезапускаем историю
-                await handle_callbacks(event)  # Рекурсивно вызываем для обновления
+                await handle_callbacks(event)
                 return
 
             if data == "download_pdf":
@@ -1307,7 +1285,7 @@ async def main_bot():
                 if has_subscription(user_id):
                     buttons = [
                         [KeyboardButtonCallback("📋 Меню", b"main_menu")],
-                        [KeyboardButtonCallback("👤 Профиль", b"profile"), KeyboardButtonCallback("👨‍💻 Разработчик", b"developer")],
+                        [KeyboardButtonCallback("👤 Профиль", b"profile"), KeyboardButtonCallback("🛠 Поддержка", b"support")],
                         [KeyboardButtonCallback("📜 Моя история", b"history")]
                     ]
                     await upd(f"📌 {BOT_NAME}", buttons)
@@ -1402,6 +1380,22 @@ async def main_bot():
             async def upd(msg_text, buttons=None):
                 await update_message(event, msg_text, buttons)
 
+            if state == 'waiting_support_message':
+                user_states.pop(user_id, None)
+                user = await bot.get_entity(user_id)
+                username = f"@{user.username}" if user.username else f"ID {user.id}"
+                support_text = f"📩 НОВОЕ СООБЩЕНИЕ В ПОДДЕРЖКУ\n\n"
+                support_text += f"👤 Пользователь: {username}\n"
+                support_text += f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+                support_text += f"📝 Текст:\n{text}"
+                try:
+                    await bot.send_message(ADMIN_IDS[0], support_text)
+                    await upd("✅ Ваше сообщение отправлено в поддержку. Мы ответим вам в ближайшее время.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                except Exception as e:
+                    log_error(f"Support error: {e}")
+                    await upd(f"❌ Ошибка отправки: {str(e)[:50]}", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                return
+
             if state == 'waiting_mix_target':
                 if 't.me/' in text or text.startswith('@'):
                     target = text
@@ -1450,7 +1444,7 @@ async def main_bot():
                         'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'target': username,
                         'type': 'Оператор',
-                        'destination': 'Веб/Микс',
+                        'destination': 'Микс',
                         'user': user_id
                     })
                     save_data(data)
@@ -1535,7 +1529,7 @@ async def main_bot():
             if has_subscription(user_id):
                 buttons = [
                     [KeyboardButtonCallback("📋 Меню", b"main_menu")],
-                    [KeyboardButtonCallback("👤 Профиль", b"profile"), KeyboardButtonCallback("👨‍💻 Разработчик", b"developer")],
+                    [KeyboardButtonCallback("👤 Профиль", b"profile"), KeyboardButtonCallback("🛠 Поддержка", b"support")],
                     [KeyboardButtonCallback("📜 Моя история", b"history")]
                 ]
                 text = f"📌 {BOT_NAME}\n\n❌ Отменено"
