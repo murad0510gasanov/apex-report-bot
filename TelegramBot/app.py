@@ -60,6 +60,7 @@ ERROR_LOG = os.path.join(BASE_DIR, 'errors.log')
 _subs_cache = {}
 _subs_cache_time = 0
 pending_requests = {}
+bot_instance = None  # ГЛОБАЛЬНАЯ ПЕРЕМЕННАЯ ДЛЯ БОТА
 
 def log_error(msg):
     try:
@@ -132,12 +133,15 @@ def has_subscription(user_id):
         return False
 
 async def send_log_to_channel(text):
-    try:
-        async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
-            channel = await temp_client.get_entity(CHANNEL_ID)
-            await temp_client.send_message(channel, text)
-    except Exception as e:
-        log_error(f"Channel log error: {e}")
+    """Отправляет лог в канал через главного бота"""
+    global bot_instance
+    if bot_instance:
+        try:
+            await bot_instance.send_message(CHANNEL_ID, text)
+        except Exception as e:
+            log_error(f"Channel log error: {e}")
+    else:
+        log_error(f"Bot not initialized, log: {text}")
 
 def generate_phone():
     return f"+7{random.randint(1000000000, 9999999999)}"
@@ -1046,9 +1050,11 @@ async def run_subscription_bot():
         log_error(f"[SUB-BOT] Ошибка: {e}")
 
 async def main_bot():
+    global bot_instance
     try:
         bot = TelegramClient('bot_session', API_ID, API_HASH)
         await bot.start(bot_token=BOT_TOKEN)
+        bot_instance = bot  # СОХРАНЯЕМ БОТА В ГЛОБАЛЬНУЮ ПЕРЕМЕННУЮ
         print("Bot connected")
         user_states = {}
         user_data = {}
