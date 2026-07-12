@@ -1,4 +1,3 @@
-# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ)
 import os
 import sys
 import json
@@ -46,10 +45,19 @@ for d in [AU_DIR, US_DIR, INTERNAL_DIR]:
 LOG_FILE = os.path.join(BASE_DIR, 'bot_analytics.json')
 SUBS_FILE = os.path.join(BASE_DIR, 'subscriptions.json')
 REQUESTS_FILE = os.path.join(BASE_DIR, 'requests.json')
+ERROR_LOG = os.path.join(BASE_DIR, 'errors.log')
 
 _subs_cache = {}
 _subs_cache_time = 0
 pending_requests = {}
+
+def log_error(msg):
+    try:
+        with open(ERROR_LOG, 'a', encoding='utf-8') as f:
+            f.write(f"[{datetime.now()}] {msg}\n")
+        print(msg)
+    except:
+        pass
 
 # ===== РАБОТА С ДАННЫМИ =====
 def load_data():
@@ -147,7 +155,7 @@ async def try_connect(session_path, timeout=20, retries=3):
         except Exception as e:
             if client:
                 await client.disconnect()
-            print(f"[{session_name}] ❌ Ошибка: {str(e)[:50]}")
+            log_error(f"[{session_name}] ❌ Ошибка: {str(e)[:50]}")
             if attempt == retries - 1:
                 return None
     return None
@@ -166,12 +174,12 @@ async def get_live_session():
     if not all_sessions:
         return None
     for session_path in all_sessions:
-        client = await try_connect(session_path, timeout=10, retries=1)
+        client = await try_connect(session_path, timeout=10, retries=2)
         if client:
             return client
     return None
 
-# ===== AI-АНАЛИЗ ЧЕРЕЗ POLLINATIONS AI (С УСИЛЕННЫМ ФОЛБЭКОМ) =====
+# ===== AI =====
 async def analyze_with_ai(texts, target, single=False):
     if single:
         messages_text = texts[0] if texts else "Пустое сообщение"
@@ -231,9 +239,9 @@ Format:
                 else:
                     return {"error": f"Ошибка AI: {resp.status}"}
     except Exception as e:
+        log_error(f"AI error: {str(e)[:100]}")
         return {"error": f"Ошибка AI: {str(e)[:100]}"}
 
-# ===== ГЕНЕРАЦИЯ ТЕКСТА ЖАЛОБЫ =====
 async def generate_complaint_text(target, violation, description, links):
     if not links:
         links = ["No specific links provided"]
@@ -317,6 +325,7 @@ async def send_operator_report(user_id, username, edit_callback=None):
 
     except Exception as e:
         result = f"❌ Ошибка: {str(e)[:50]}"
+        log_error(result)
 
     if edit_callback:
         await edit_callback(result)
@@ -462,7 +471,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
                 if msg.buttons:
                     for row in msg.buttons:
                         for btn in row:
-                            if btn.text and 'Other' in btn.text:
+                            if btn.text and ('Other' in btn.text or 'Другое' in btn.text):
                                 await btn.click()
                                 await asyncio.sleep(1)
                                 break
@@ -498,7 +507,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
                     break
             print(f"[AU] {session_name} ✅ Отправлено")
         except Exception as e:
-            print(f"[AU] {session_name} ❌ {str(e)[:50]}")
+            log_error(f"[AU] {session_name} ❌ {str(e)[:50]}")
         finally:
             await client.disconnect()
 
@@ -555,7 +564,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
                     break
             print(f"[US] {session_name} ✅ Отправлено")
         except Exception as e:
-            print(f"[US] {session_name} ❌ {str(e)[:50]}")
+            log_error(f"[US] {session_name} ❌ {str(e)[:50]}")
         finally:
             await client.disconnect()
 
@@ -572,20 +581,12 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         await edit_callback("✅ Микс-жалоба отправлена!")
     return "✅ Микс-жалоба отправлена!"
 
-# ===== AI-АНАЛИЗ (С УСИЛЕННЫМ ФОЛБЭКОМ) =====
+# ===== AIAnalyzer =====
 class AIAnalyzer:
     def __init__(self):
         self.last_result = None
-        # РАСШИРЕННЫЙ СПИСОК КЛЮЧЕВЫХ СЛОВ
         self.keywords = {
-            "drugs": [
-                "наркотик", "наркота", "наркотики", "кокаин", "кока", "кокс",
-                "героин", "метамфетамин", "экстази", "марихуана", "анаша", "план",
-                "шишки", "бошки", "гашиш", "спайс", "соль", "скорость", "кристалл",
-                "закладка", "закладки", "продажа", "продам", "куплю", "синтетика",
-                "drugs", "cocaine", "heroin", "meth", "mdma", "weed", "cannabis",
-                "трава", "порошок", "белый", "кристаллы", "меф", "амф", "экстази"
-            ],
+            "drugs": ["наркотик", "наркота", "наркотики", "кокаин", "кока", "кокс", "героин", "метамфетамин", "экстази", "марихуана", "анаша", "план", "шишки", "бошки", "гашиш", "спайс", "соль", "скорость", "кристалл", "закладка", "закладки", "продажа", "продам", "куплю", "синтетика", "drugs", "cocaine", "heroin", "meth", "mdma", "weed", "cannabis", "трава", "порошок", "белый", "кристаллы", "меф", "амф", "экстази"],
             "personal": ["паспорт", "фио", "ф.и.о", "адрес", "прописка", "регистрация", "дом", "квартира", "подъезд", "этаж", "улица", "телефон", "снилс", "инн", "личные данные", "passport", "address", "phone"],
             "porn": ["порно", "порнография", "секс", "эротика", "голый", "голая", "интим", "18+", "porn", "sex", "nude", "adult"],
             "violence": ["насилие", "убить", "убийство", "смерть", "оружие", "пистолет", "нож", "угроза", "избить", "кровь", "взорвать", "бомба", "violence", "kill", "death", "weapon", "gun", "threat"],
@@ -603,23 +604,14 @@ class AIAnalyzer:
         }
 
     def fallback_analyze(self, text):
-        """Усиленный фолбэк: ищет ключевые слова и паттерны"""
         text_lower = text.lower()
         results = {}
-        
-        # Ищем ключевые слова
         for category, words in self.keywords.items():
-            count = 0
-            for word in words:
-                if word in text_lower:
-                    count += 1
-            # Если найдено хоть одно слово — даём высокий процент
+            count = sum(1 for word in words if word in text_lower)
             if count > 0:
                 results[category] = min(50 + (count * 10), 100)
             else:
                 results[category] = 0
-        
-        # Ищем паттерны
         for pattern_name, pattern in self.patterns.items():
             matches = re.findall(pattern, text, re.IGNORECASE)
             if matches:
@@ -627,7 +619,6 @@ class AIAnalyzer:
                 if pattern_name in cat_map:
                     cat = cat_map[pattern_name]
                     results[cat] = min(results.get(cat, 0) + 30, 100)
-        
         return results
 
     def get_violation(self, results):
@@ -648,7 +639,6 @@ class AIAnalyzer:
         message_ids = []
 
         try:
-            # --- ПОЛУЧЕНИЕ СУЩНОСТИ ---
             entity = None
             if 't.me/' in target:
                 clean_target = target.replace('https://t.me/', '').replace('t.me/', '')
@@ -672,13 +662,12 @@ class AIAnalyzer:
                 target_type = "бот" if entity.bot else "пользователь"
             else:
                 await client.disconnect()
-                return None, "❌ Неверная ссылка. Отправьте ссылку на канал (https://t.me/...)"
+                return None, "❌ Неверная ссылка. Отправьте ссылку на канал[](https://t.me/...)"
 
             if not entity:
                 await client.disconnect()
                 return None, "❌ Не удалось получить информацию о канале. Проверьте ссылку."
 
-            # --- ПОДПИСКА НА КАНАЛ ---
             try:
                 await client(JoinChannelRequest(entity))
                 print(f"[JOIN] Подписался на {chat_username}")
@@ -720,7 +709,6 @@ class AIAnalyzer:
                     await client.disconnect()
                     return None, f"❌ Не удалось подписаться или отправить заявку: {str(e)[:50]}"
 
-            # --- ЕСЛИ ЭТО БОТ ---
             if target_type == "бот":
                 try:
                     await client.send_message(entity, '/start')
@@ -728,7 +716,6 @@ class AIAnalyzer:
                 except:
                     pass
 
-            # --- ЧИТАЕМ СООБЩЕНИЯ ---
             try:
                 msgs = await client.get_messages(entity, limit=50)
                 if not msgs:
@@ -754,10 +741,8 @@ class AIAnalyzer:
         if not messages:
             return None, "❌ Нет сообщений"
 
-        # --- АНАЛИЗ: СНАЧАЛА ПЫТАЕМСЯ ЧЕРЕЗ AI ---
         result = await analyze_with_ai(messages, target)
         
-        # --- ЕСЛИ AI НЕ СРАБОТАЛ ИЛИ НЕ НАШЁЛ НАРУШЕНИЕ, ИСПОЛЬЗУЕМ УСИЛЕННЫЙ ФОЛБЭК ---
         if result.get("error") or not result.get("violation"):
             print(f"[AI] Ошибка или нарушение не найдено, используем усиленный фолбэк")
             results = self.fallback_analyze(" ".join(messages))
@@ -775,13 +760,11 @@ class AIAnalyzer:
             else:
                 result = {"violation": None, "severity": None, "explanation": "Нарушений не найдено.", "links": []}
 
-        # --- ДОБАВЛЯЕМ ССЫЛКИ, ЕСЛИ ИХ НЕТ ---
         if result.get("violation") and not result.get("links") and chat_username:
             result["links"] = [f"https://t.me/{chat_username}/{msg_id}" for msg_id in message_ids[:5]]
 
         self.last_result = result
 
-        # --- ОТПРАВКА В КАНАЛ ---
         if result.get("violation"):
             try:
                 async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
@@ -875,7 +858,8 @@ class AIAnalyzer:
                             await client.disconnect()
                     except:
                         await client.disconnect()
-            except:
+            except Exception as e:
+                log_error(f"Pending check error: {e}")
                 continue
 
     async def analyze_single_message(self, message_text, link):
@@ -897,7 +881,7 @@ class AIAnalyzer:
         self.last_result = result
         return result
 
-# ===== HTTP-СЕРВЕР ДЛЯ RENDER =====
+# ===== HTTP-СЕРВЕР =====
 async def health_check(request):
     return web.Response(text="I'm alive!")
 
@@ -1029,7 +1013,7 @@ async def run_subscription_bot():
         print("[SUB-BOT] Готов")
         await bot.run_until_disconnected()
     except Exception as e:
-        print(f"[SUB-BOT] Ошибка: {e}")
+        log_error(f"[SUB-BOT] Ошибка: {e}")
 
 # ===== ГЛАВНЫЙ БОТ =====
 async def main_bot():
@@ -1291,7 +1275,7 @@ async def main_bot():
                         [KeyboardButtonCallback("🚀 Отправить жалобу", f"send_ai_report_{user_id}")],
                         [KeyboardButtonCallback("🔙 Назад", b"main_menu")]
                     ]
-                    user_data[user_id]['last_ai_description'] = f"Violation type: {violation}. Found in {len(result.get('messages', []))} messages."
+                    user_data[user_id]['last_ai_description'] = f"Violation type: {violation}. Found in {len(messages)} messages." if 'messages' in locals() else "Violation detected"
                     await upd(report, buttons)
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1346,7 +1330,7 @@ async def main_bot():
         print("Bot ready")
         await bot.run_until_disconnected()
     except Exception as e:
-        print(f"Error: {e}")
+        log_error(f"Main bot error: {e}")
 
 # ===== ЗАПУСК =====
 async def main():
@@ -1361,4 +1345,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("Bot stopped")
     except Exception as e:
-        print(f"Fatal error: {e}")
+        log_error(f"Fatal error: {e}")
