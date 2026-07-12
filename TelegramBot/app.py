@@ -1,3 +1,4 @@
+# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ)
 import os
 import sys
 import json
@@ -8,6 +9,14 @@ import time
 from datetime import datetime, timedelta
 from aiohttp import web
 import aiohttp
+from io import BytesIO
+
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
 
 try:
     from telethon import TelegramClient, events, errors
@@ -25,6 +34,7 @@ API_ID = 21826549
 API_HASH = 'c1a19f792cfd9e397200d16c7e448160'
 BOT_TOKEN = '8870668741:AAHL2cO1BWoHau-bVmBLziMadDj94SnU7IA'
 CHANNEL_ID = -1004489395750
+RUCAPTCHA_API_KEY = 'a2e1b40a756ccc16c11ede55eb2c6567'
 SUBSCRIPTION_BOT_TOKEN = '8238807176:AAFBRezNnlRiJ3oE-D81aOQGJ8NvJzBGBiU'
 DEVELOPER_LINK = 'https://t.me/cazlen'
 BOT_NAME = 'APEX REPORT'
@@ -59,7 +69,6 @@ def log_error(msg):
     except:
         pass
 
-# ===== РАБОТА С ДАННЫМИ =====
 def load_data():
     if os.path.exists(LOG_FILE):
         try:
@@ -122,10 +131,79 @@ def has_subscription(user_id):
     except:
         return False
 
+async def send_log_to_channel(text):
+    try:
+        async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
+            channel = await temp_client.get_entity(CHANNEL_ID)
+            await temp_client.send_message(channel, text)
+    except Exception as e:
+        log_error(f"Channel log error: {e}")
+
 def generate_phone():
     return f"+7{random.randint(1000000000, 9999999999)}"
 
-# ===== ПОДКЛЮЧЕНИЕ =====
+async def solve_captcha(api_key):
+    try:
+        async with aiohttp.ClientSession() as session:
+            session.headers.update({'User-Agent': 'Mozilla/5.0'})
+            async with session.get("https://telegram.org/support", timeout=10) as resp:
+                html = await resp.text()
+                match = re.search(r'data-sitekey=["\']([^"\']+)["\']', html)
+                if not match:
+                    return None, None
+                sitekey = match.group(1)
+            
+            data = {
+                "key": api_key,
+                "method": "turnstile",
+                "sitekey": sitekey,
+                "pageurl": "https://telegram.org/support",
+                "json": 1
+            }
+            async with session.post("http://rucaptcha.com/in.php", data=data, timeout=15) as resp:
+                res = await resp.json()
+                if res.get("status") != 1:
+                    return None, None
+                captcha_id = res.get("request")
+            
+            for _ in range(5):
+                await asyncio.sleep(2)
+                async with session.get(f"http://rucaptcha.com/res.php?key={api_key}&action=get&id={captcha_id}&json=1") as resp:
+                    data = await resp.json()
+                    if data.get("status") == 1:
+                        return data.get("request"), session
+                    elif "CAPCHA_NOT_READY" in str(data):
+                        continue
+                    else:
+                        return None, None
+            return None, None
+    except:
+        return None, None
+
+async def send_web_report(api_key, name, phone, text):
+    token, session = await solve_captcha(api_key)
+    if not token or not session:
+        return False, "Капча не решена"
+    headers = {
+        'User-Agent': 'Mozilla/5.0',
+        'Content-Type': 'application/x-www-form-urlencoded',
+    }
+    data = {
+        'name': name,
+        'email': "sms@telegram.org",
+        'phone': phone,
+        'msg': text,
+        'cf-turnstile-response': token
+    }
+    try:
+        async with session.post("https://telegram.org/support", headers=headers, data=data, timeout=15) as r:
+            if r.status == 200:
+                return True, f"код: {r.status}"
+            else:
+                return False, f"код: {r.status}"
+    except:
+        return False, "ошибка"
+
 async def try_connect(session_path, timeout=20, retries=3):
     session_name = os.path.basename(session_path)
     for attempt in range(retries):
@@ -139,19 +217,6 @@ async def try_connect(session_path, timeout=20, retries=3):
             await asyncio.wait_for(client.get_me(), timeout=timeout)
             print(f"[{session_name}] ✅ Подключена")
             return client
-        except asyncio.TimeoutError:
-            if client:
-                await client.disconnect()
-            print(f"[{session_name}] ⏰ Таймаут")
-            if attempt == retries - 1:
-                return None
-        except FloodWaitError as e:
-            if client:
-                await client.disconnect()
-            print(f"[{session_name}] ⏳ FloodWait {e.seconds} сек")
-            await asyncio.sleep(min(e.seconds, 30))
-            if attempt == retries - 1:
-                return None
         except Exception as e:
             if client:
                 await client.disconnect()
@@ -179,7 +244,6 @@ async def get_live_session():
             return client
     return None
 
-# ===== AI =====
 async def analyze_with_ai(texts, target, single=False):
     if single:
         messages_text = texts[0] if texts else "Пустое сообщение"
@@ -239,20 +303,15 @@ Format:
                 else:
                     return {"error": f"Ошибка AI: {resp.status}"}
     except Exception as e:
-        log_error(f"AI error: {str(e)[:100]}")
         return {"error": f"Ошибка AI: {str(e)[:100]}"}
 
 async def generate_complaint_text(target, violation, description, links):
-    if not links:
-        links = ["No specific links provided"]
-    
-    prompt = f"""Generate a short, formal complaint to Telegram moderators about a channel that violates Terms of Service.
+    prompt = f"""Generate a formal complaint in English based on this description:
+{description}
 
 Channel: {target}
 Violation type: {violation}
-User description: {description}
-Links to violating messages:
-{chr(10).join(links)}
+Links to violating messages: {', '.join(links) if links else 'No specific links'}
 
 Write a formal complaint without any urgent words. Use only English. Keep it concise (maximum 100 words)."""
 
@@ -270,68 +329,222 @@ Write a formal complaint without any urgent words. Use only English. Keep it con
                     data = await resp.json()
                     return data['choices'][0]['message']['content'].strip()
                 else:
-                    return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {target}\n\n{description}\n\nReported messages:\n{chr(10).join(links)}\n\nPlease review this content and take appropriate action.\n\nThank you."
+                    return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {target}\n\n{description}\n\nReported messages:\n{chr(10).join(links) if links else 'No specific links'}\n\nPlease review this content and take appropriate action.\n\nThank you."
     except:
-        return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {target}\n\n{description}\n\nReported messages:\n{chr(10).join(links)}\n\nPlease review this content and take appropriate action.\n\nThank you."
+        return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {target}\n\n{description}\n\nReported messages:\n{chr(10).join(links) if links else 'No specific links'}\n\nPlease review this content and take appropriate action.\n\nThank you."
 
-# ===== ОПЕРАТОР =====
-async def send_operator_report(user_id, username, edit_callback=None):
-    try:
-        client = await get_live_session()
+def generate_pdf(user_id, reports):
+    if not REPORTLAB_AVAILABLE:
+        return None
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    y = 800
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, y, "APEX REPORT - HISTORY")
+    y -= 30
+    c.setFont("Helvetica", 12)
+    c.drawString(50, y, f"User ID: {user_id}")
+    y -= 20
+    c.drawString(50, y, f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    y -= 30
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, y, f"Total reports: {len(reports)}")
+    y -= 20
+    for i, report in enumerate(reports, 1):
+        if y < 100:
+            c.showPage()
+            y = 800
+        c.setFont("Helvetica", 10)
+        c.drawString(50, y, f"{i}. {report.get('target', 'Unknown')} - {report.get('type', 'Unknown')} - {report.get('time', 'Unknown')}")
+        if report.get('links'):
+            y -= 12
+            c.drawString(50, y, f"   Links: {', '.join(report['links'][:3])}")
+        y -= 15
+    c.save()
+    buffer.seek(0)
+    return buffer
+
+async def send_mix_report(user_id, target, text, edit_callback=None):
+    all_sessions = []
+    if os.path.exists(AU_DIR):
+        for f in os.listdir(AU_DIR):
+            if f.endswith('.session'):
+                all_sessions.append(os.path.join(AU_DIR, f))
+    if os.path.exists(US_DIR):
+        for f in os.listdir(US_DIR):
+            if f.endswith('.session'):
+                all_sessions.append(os.path.join(US_DIR, f))
+
+    if not all_sessions:
+        if edit_callback:
+            await edit_callback("❌ Нет сессий для микса (AU + US)")
+        return "❌ Нет сессий для микса"
+
+    total = len(all_sessions)
+    au_sessions = [s for s in all_sessions if 'au' in s]
+    us_sessions = [s for s in all_sessions if 'us' in s]
+    current = 0
+
+    print(f"\n📤 Микс — отправка на {target}")
+    print(f"📁 Сессий AU: {len(au_sessions)}, US: {len(us_sessions)}")
+
+    for session_path in au_sessions:
+        current += 1
+        session_name = os.path.basename(session_path)
+        client = await try_connect(session_path, timeout=15, retries=2)
         if not client:
-            result = "❌ Нет живых сессий"
-            if edit_callback:
-                await edit_callback(result)
-            return result
-
-        username = username.replace('https://t.me/', '').replace('@', '')
-        
+            print(f"[AU] {session_name} ❌ Не удалось подключиться")
+            continue
         try:
-            entity = await client.get_entity(f"@{username}")
-        except UsernameNotOccupiedError:
-            await client.disconnect()
-            result = f"❌ Оператор @{username} не найден"
-            if edit_callback:
-                await edit_callback(result)
-            return result
+            print(f"[AU] {session_name} ⏳ Отправка... ({current}/{total})")
+            await client.send_message('@AUReportBot', '/start')
+            await asyncio.sleep(2)
+            await client.send_message('@AUReportBot', target)
+            await asyncio.sleep(2)
+            async for msg in client.iter_messages('@AUReportBot', limit=5):
+                if msg.buttons:
+                    for row in msg.buttons:
+                        for btn in row:
+                            if btn.text and 'Other' in btn.text:
+                                await btn.click()
+                                await asyncio.sleep(1)
+                                break
+                        else:
+                            continue
+                        break
+                    break
+            await client.send_message('@AUReportBot', text)
+            await asyncio.sleep(2)
+            async for msg in client.iter_messages('@AUReportBot', limit=5):
+                if msg.buttons:
+                    for row in msg.buttons:
+                        for btn in row:
+                            if btn.text and 'Proceed without' in btn.text:
+                                await btn.click()
+                                await asyncio.sleep(1)
+                                break
+                        else:
+                            continue
+                        break
+                    break
+            async for msg in client.iter_messages('@AUReportBot', limit=3):
+                if msg.buttons:
+                    for row in msg.buttons:
+                        for btn in row:
+                            if btn.text and 'Confirm' in btn.text:
+                                await btn.click()
+                                await asyncio.sleep(1)
+                                break
+                        else:
+                            continue
+                        break
+                    break
+            print(f"[AU] {session_name} ✅ Отправлено")
         except Exception as e:
-            await client.disconnect()
-            result = f"❌ Ошибка: {str(e)[:50]}"
-            if edit_callback:
-                await edit_callback(result)
-            return result
-
-        try:
-            await client(ReportPeerRequest(
-                peer=entity,
-                reason=InputReportReasonSpam(),
-                message="Spam and violation of Telegram Terms of Service"
-            ))
-            result = f"✅ Жалоба на @{username} отправлена"
-            
-            try:
-                async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
-                    channel = await temp_client.get_entity(CHANNEL_ID)
-                    await temp_client.send_message(channel, f"✅ Оператор @{username} — жалоба отправлена")
-            except:
-                pass
-                
-        except FloodWaitError as e:
-            result = f"⏳ FloodWait {e.seconds} сек"
-        except Exception as e:
-            result = f"❌ Ошибка: {str(e)[:50]}"
+            print(f"[AU] {session_name} ❌ {str(e)[:50]}")
         finally:
             await client.disconnect()
 
+    for session_path in us_sessions:
+        current += 1
+        session_name = os.path.basename(session_path)
+        client = await try_connect(session_path, timeout=15, retries=2)
+        if not client:
+            print(f"[US] {session_name} ❌ Не удалось подключиться")
+            continue
+        try:
+            print(f"[US] {session_name} ⏳ Отправка... ({current}/{total})")
+            await client.send_message('@TIDABot', '/start')
+            await asyncio.sleep(2)
+            await client.send_message('@TIDABot', target)
+            await asyncio.sleep(2)
+            async for msg in client.iter_messages('@TIDABot', limit=5):
+                if msg.buttons:
+                    for row in msg.buttons:
+                        for btn in row:
+                            if btn.text and 'Non-consensual' in btn.text:
+                                await btn.click()
+                                await asyncio.sleep(1)
+                                break
+                        else:
+                            continue
+                        break
+                    break
+            await client.send_message('@TIDABot', text)
+            await asyncio.sleep(2)
+            async for msg in client.iter_messages('@TIDABot', limit=5):
+                if msg.buttons:
+                    for row in msg.buttons:
+                        for btn in row:
+                            if btn.text and 'Proceed without' in btn.text:
+                                await btn.click()
+                                await asyncio.sleep(1)
+                                break
+                        else:
+                            continue
+                        break
+                    break
+            async for msg in client.iter_messages('@TIDABot', limit=3):
+                if msg.buttons:
+                    for row in msg.buttons:
+                        for btn in row:
+                            if btn.text and 'Confirm' in btn.text:
+                                await btn.click()
+                                await asyncio.sleep(1)
+                                break
+                        else:
+                            continue
+                        break
+                    break
+            print(f"[US] {session_name} ✅ Отправлено")
+        except Exception as e:
+            print(f"[US] {session_name} ❌ {str(e)[:50]}")
+        finally:
+            await client.disconnect()
+
+    print(f"\n📊 Микс — отправлено {current}/{total} сессий")
+    return "✅ Микс-жалоба отправлена!"
+
+async def send_operator_report(user_id, username, edit_callback=None):
+    result = None
+    try:
+        username = username.replace('https://t.me/', '').replace('@', '')
+        target = f"@{username}"
+        phone = generate_phone()
+        name = "Operator Report"
+        text = f"This account is an operator of a drug shop."
+        
+        # 1) Пробуем веб-метод
+        success, msg = await send_web_report(RUCAPTCHA_API_KEY, name, phone, text)
+        if success:
+            result = f"✅ Оператор {username} — жалоба отправлена (веб)"
+            await send_log_to_channel(f"✅ Оператор {username} — жалоба отправлена (веб)")
+            if edit_callback:
+                await edit_callback(result)
+            return result
+        
+        # 2) Если веб не сработал — пробуем Микс
+        print(f"[OPERATOR] Веб не сработал: {msg}. Пробуем Микс...")
+        if edit_callback:
+            await edit_callback("⏳ Веб-метод не сработал. Пытаюсь через Микс...")
+        
+        mix_result = await send_mix_report(user_id, target, text, edit_callback=None)
+        if "✅" in mix_result:
+            result = f"✅ Оператор {username} — жалоба отправлена (микс)"
+            await send_log_to_channel(f"✅ Оператор {username} — жалоба отправлена (микс)")
+        else:
+            result = f"❌ Оператор {username} — не удалось отправить жалобу"
+        
+        if edit_callback:
+            await edit_callback(result)
+        return result
+        
     except Exception as e:
         result = f"❌ Ошибка: {str(e)[:50]}"
-        log_error(result)
+        if edit_callback:
+            await edit_callback(result)
+        return result
 
-    if edit_callback:
-        await edit_callback(result)
-    return result
-
-# ===== ТЕЛЕТОН =====
 async def send_telethon_report(user_id, target, edit_callback=None):
     all_sessions = get_all_sessions()
     if not all_sessions:
@@ -418,175 +631,15 @@ async def send_telethon_report(user_id, target, edit_callback=None):
     if errors > 0:
         result += f"\n⚠️ Ошибок: {errors}"
 
-    try:
-        async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
-            channel = await temp_client.get_entity(CHANNEL_ID)
-            await temp_client.send_message(channel, f"✅ Telethon репорт на {target}\nУспешно: {success_count}/{total}\nОшибок: {errors}")
-    except:
-        pass
-
     if edit_callback:
         await edit_callback(result)
     return result
 
-# ===== МИКС =====
-async def send_mix_report(user_id, target, text, edit_callback=None):
-    all_sessions = []
-    if os.path.exists(AU_DIR):
-        for f in os.listdir(AU_DIR):
-            if f.endswith('.session'):
-                all_sessions.append(os.path.join(AU_DIR, f))
-    if os.path.exists(US_DIR):
-        for f in os.listdir(US_DIR):
-            if f.endswith('.session'):
-                all_sessions.append(os.path.join(US_DIR, f))
-
-    if not all_sessions:
-        if edit_callback:
-            await edit_callback("❌ Нет сессий для микса (AU + US)")
-        return "❌ Нет сессий для микса"
-
-    total = len(all_sessions)
-    au_sessions = [s for s in all_sessions if 'au' in s]
-    us_sessions = [s for s in all_sessions if 'us' in s]
-    current = 0
-
-    print(f"\n📤 Микс — отправка на {target}")
-    print(f"📁 Сессий AU: {len(au_sessions)}, US: {len(us_sessions)}")
-
-    for session_path in au_sessions:
-        current += 1
-        session_name = os.path.basename(session_path)
-        client = await try_connect(session_path, timeout=15, retries=2)
-        if not client:
-            print(f"[AU] {session_name} ❌ Не удалось подключиться")
-            continue
-        try:
-            print(f"[AU] {session_name} ⏳ Отправка... ({current}/{total})")
-            await client.send_message('@AUReportBot', '/start')
-            await asyncio.sleep(2)
-            await client.send_message('@AUReportBot', target)
-            await asyncio.sleep(2)
-            async for msg in client.iter_messages('@AUReportBot', limit=5):
-                if msg.buttons:
-                    for row in msg.buttons:
-                        for btn in row:
-                            if btn.text and ('Other' in btn.text or 'Другое' in btn.text):
-                                await btn.click()
-                                await asyncio.sleep(1)
-                                break
-                        else:
-                            continue
-                        break
-                    break
-            await client.send_message('@AUReportBot', text)
-            await asyncio.sleep(2)
-            async for msg in client.iter_messages('@AUReportBot', limit=5):
-                if msg.buttons:
-                    for row in msg.buttons:
-                        for btn in row:
-                            if btn.text and 'Proceed without' in btn.text:
-                                await btn.click()
-                                await asyncio.sleep(1)
-                                break
-                        else:
-                            continue
-                        break
-                    break
-            async for msg in client.iter_messages('@AUReportBot', limit=3):
-                if msg.buttons:
-                    for row in msg.buttons:
-                        for btn in row:
-                            if btn.text and 'Confirm' in btn.text:
-                                await btn.click()
-                                await asyncio.sleep(1)
-                                break
-                        else:
-                            continue
-                        break
-                    break
-            print(f"[AU] {session_name} ✅ Отправлено")
-        except Exception as e:
-            log_error(f"[AU] {session_name} ❌ {str(e)[:50]}")
-        finally:
-            await client.disconnect()
-
-    for session_path in us_sessions:
-        current += 1
-        session_name = os.path.basename(session_path)
-        client = await try_connect(session_path, timeout=15, retries=2)
-        if not client:
-            print(f"[US] {session_name} ❌ Не удалось подключиться")
-            continue
-        try:
-            print(f"[US] {session_name} ⏳ Отправка... ({current}/{total})")
-            await client.send_message('@TIDABot', '/start')
-            await asyncio.sleep(2)
-            await client.send_message('@TIDABot', target)
-            await asyncio.sleep(2)
-            async for msg in client.iter_messages('@TIDABot', limit=5):
-                if msg.buttons:
-                    for row in msg.buttons:
-                        for btn in row:
-                            if btn.text and 'Non-consensual' in btn.text:
-                                await btn.click()
-                                await asyncio.sleep(1)
-                                break
-                        else:
-                            continue
-                        break
-                    break
-            await client.send_message('@TIDABot', text)
-            await asyncio.sleep(2)
-            async for msg in client.iter_messages('@TIDABot', limit=5):
-                if msg.buttons:
-                    for row in msg.buttons:
-                        for btn in row:
-                            if btn.text and 'Proceed without' in btn.text:
-                                await btn.click()
-                                await asyncio.sleep(1)
-                                break
-                        else:
-                            continue
-                        break
-                    break
-            async for msg in client.iter_messages('@TIDABot', limit=3):
-                if msg.buttons:
-                    for row in msg.buttons:
-                        for btn in row:
-                            if btn.text and 'Confirm' in btn.text:
-                                await btn.click()
-                                await asyncio.sleep(1)
-                                break
-                        else:
-                            continue
-                        break
-                    break
-            print(f"[US] {session_name} ✅ Отправлено")
-        except Exception as e:
-            log_error(f"[US] {session_name} ❌ {str(e)[:50]}")
-        finally:
-            await client.disconnect()
-
-    print(f"\n📊 Микс — отправлено {current}/{total} сессий")
-
-    try:
-        async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
-            channel = await temp_client.get_entity(CHANNEL_ID)
-            await temp_client.send_message(channel, f"✅ Микс-жалоба отправлена на {target}")
-    except:
-        pass
-
-    if edit_callback:
-        await edit_callback("✅ Микс-жалоба отправлена!")
-    return "✅ Микс-жалоба отправлена!"
-
-# ===== AIAnalyzer =====
 class AIAnalyzer:
     def __init__(self):
         self.last_result = None
         self.keywords = {
-            "drugs": ["наркотик", "наркота", "наркотики", "кокаин", "кока", "кокс", "героин", "метамфетамин", "экстази", "марихуана", "анаша", "план", "шишки", "бошки", "гашиш", "спайс", "соль", "скорость", "кристалл", "закладка", "закладки", "продажа", "продам", "куплю", "синтетика", "drugs", "cocaine", "heroin", "meth", "mdma", "weed", "cannabis", "трава", "порошок", "белый", "кристаллы", "меф", "амф", "экстази"],
+            "drugs": ["наркотик", "кокаин", "героин", "спайс", "соль", "шишки", "закладка", "продажа", "продам", "drugs", "cocaine", "heroin", "метамфетамин", "экстази", "марихуана", "анаша", "план", "бошки", "гашиш", "скорость", "кристалл", "синтетика", "трава", "порошок", "белый", "кристаллы", "меф", "амф"],
             "personal": ["паспорт", "фио", "ф.и.о", "адрес", "прописка", "регистрация", "дом", "квартира", "подъезд", "этаж", "улица", "телефон", "снилс", "инн", "личные данные", "passport", "address", "phone"],
             "porn": ["порно", "порнография", "секс", "эротика", "голый", "голая", "интим", "18+", "porn", "sex", "nude", "adult"],
             "violence": ["насилие", "убить", "убийство", "смерть", "оружие", "пистолет", "нож", "угроза", "избить", "кровь", "взорвать", "бомба", "violence", "kill", "death", "weapon", "gun", "threat"],
@@ -595,30 +648,18 @@ class AIAnalyzer:
             "bullying": ["буллинг", "травля", "оскорбление", "унижение", "bullying", "harassment", "insult"]
         }
 
-        self.patterns = {
-            "phone": r'(\+7|8)[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}',
-            "email": r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-            "passport": r'[0-9]{4}\s?[0-9]{6}',
-            "address": r'(г|гор|город|ул|улица|пр|проспект|пер|переулок|бул|бульвар|д|дом|кв|квартира)[\.\s]',
-            "fio": r'[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+'
-        }
-
     def fallback_analyze(self, text):
         text_lower = text.lower()
         results = {}
         for category, words in self.keywords.items():
-            count = sum(1 for word in words if word in text_lower)
+            count = 0
+            for word in words:
+                if word in text_lower:
+                    count += 1
             if count > 0:
                 results[category] = min(50 + (count * 10), 100)
             else:
                 results[category] = 0
-        for pattern_name, pattern in self.patterns.items():
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            if matches:
-                cat_map = {"phone": "personal", "email": "personal", "passport": "personal", "address": "personal", "fio": "personal"}
-                if pattern_name in cat_map:
-                    cat = cat_map[pattern_name]
-                    results[cat] = min(results.get(cat, 0) + 30, 100)
         return results
 
     def get_violation(self, results):
@@ -662,7 +703,7 @@ class AIAnalyzer:
                 target_type = "бот" if entity.bot else "пользователь"
             else:
                 await client.disconnect()
-                return None, "❌ Неверная ссылка. Отправьте ссылку на канал[](https://t.me/...)"
+                return None, "❌ Неверная ссылка. Отправьте ссылку на канал (https://t.me/...)"
 
             if not entity:
                 await client.disconnect()
@@ -717,7 +758,7 @@ class AIAnalyzer:
                     pass
 
             try:
-                msgs = await client.get_messages(entity, limit=50)
+                msgs = await asyncio.wait_for(client.get_messages(entity, limit=50), timeout=15)
                 if not msgs:
                     await client.disconnect()
                     return None, "❌ Нет сообщений в канале"
@@ -725,6 +766,9 @@ class AIAnalyzer:
                     if m and m.text:
                         messages.append(m.text)
                         message_ids.append(m.id)
+            except asyncio.TimeoutError:
+                await client.disconnect()
+                return None, "❌ Таймаут при чтении сообщений"
             except Exception as e:
                 await client.disconnect()
                 return None, f"❌ Не удалось прочитать сообщения: {str(e)[:50]}"
@@ -744,7 +788,7 @@ class AIAnalyzer:
         result = await analyze_with_ai(messages, target)
         
         if result.get("error") or not result.get("violation"):
-            print(f"[AI] Ошибка или нарушение не найдено, используем усиленный фолбэк")
+            print(f"[AI] Ошибка или нарушение не найдено, используем фолбэк")
             results = self.fallback_analyze(" ".join(messages))
             violation, percent = self.get_violation(results)
             if violation:
@@ -766,23 +810,9 @@ class AIAnalyzer:
         self.last_result = result
 
         if result.get("violation"):
-            try:
-                async with TelegramClient('temp', API_ID, API_HASH) as temp_client:
-                    channel = await temp_client.get_entity(CHANNEL_ID)
-                    report_text = (
-                        f"🔍 AI Анализ: {target}\n"
-                        f"Тип: {target_type.upper()}\n"
-                        f"⚠️ Нарушение: {result['violation'].upper()} ({result.get('severity', 'medium').upper()})\n"
-                        f"📝 Объяснение: {result.get('explanation', '')}\n"
-                        f"📊 Сообщений: {len(messages)}\n"
-                    )
-                    if result.get("links"):
-                        report_text += f"🔗 Ссылки на нарушения:\n" + "\n".join(result["links"])
-                    else:
-                        report_text += "❌ Найдено нарушение!"
-                    await temp_client.send_message(channel, report_text)
-            except:
-                pass
+            await send_log_to_channel(f"🔍 AI Анализ: {target}\n⚠️ Нарушение: {result['violation'].upper()} ({result.get('severity', 'medium').upper()})\n📝 Объяснение: {result.get('explanation', '')}")
+        else:
+            await send_log_to_channel(f"🔍 AI Анализ: {target}\n✅ Нарушений не найдено")
 
         return result, None
 
@@ -794,19 +824,19 @@ class AIAnalyzer:
                     if req.get("status") != "waiting":
                         continue
                     
-                    client = await try_connect(req["client_filename"], timeout=10, retries=1)
+                    client = await try_connect(req["client_filename"], timeout=10, retries=2)
                     if not client:
                         continue
                     
                     try:
-                        msgs = await client.get_messages(req["entity"], limit=1)
+                        msgs = await asyncio.wait_for(client.get_messages(req["entity"], limit=1), timeout=10)
                         if msgs:
                             req["status"] = "approved"
                             print(f"[JOIN] Заявка для {req['chat_username']} одобрена!")
                             
                             messages = []
                             message_ids = []
-                            all_msgs = await client.get_messages(req["entity"], limit=50)
+                            all_msgs = await asyncio.wait_for(client.get_messages(req["entity"], limit=50), timeout=15)
                             for m in all_msgs:
                                 if m and m.text:
                                     messages.append(m.text)
@@ -844,23 +874,25 @@ class AIAnalyzer:
                                     ]
                                     try:
                                         await bot_instance.send_message(user_id, report, buttons=buttons)
-                                    except:
-                                        pass
+                                    except Exception as e:
+                                        log_error(f"Ошибка отправки результата пользователю: {e}")
                                 else:
                                     try:
                                         await bot_instance.send_message(user_id, f"🔍 AI-АНАЛИЗ\n\nЦель: {req['target']}\n✅ Нарушений не найдено.")
-                                    except:
-                                        pass
+                                    except Exception as e:
+                                        log_error(f"Ошибка отправки результата пользователю: {e}")
                             
                             await client.disconnect()
                             pending_requests.pop(user_id, None)
                         else:
                             await client.disconnect()
-                    except:
+                    except asyncio.TimeoutError:
                         await client.disconnect()
+                    except Exception as e:
+                        await client.disconnect()
+                        log_error(f"Ошибка в check_pending_requests: {e}")
             except Exception as e:
-                log_error(f"Pending check error: {e}")
-                continue
+                log_error(f"Ошибка в check_pending_requests: {e}")
 
     async def analyze_single_message(self, message_text, link):
         result = await analyze_with_ai([message_text], link, single=True)
@@ -881,7 +913,6 @@ class AIAnalyzer:
         self.last_result = result
         return result
 
-# ===== HTTP-СЕРВЕР =====
 async def health_check(request):
     return web.Response(text="I'm alive!")
 
@@ -896,7 +927,6 @@ async def start_http_server():
     print("[HTTP] Сервер запущен на порту 10000")
     await asyncio.Event().wait()
 
-# ===== БОТ ДЛЯ ПОДПИСОК =====
 async def run_subscription_bot():
     try:
         print("[SUB-BOT] Запуск...")
@@ -1015,7 +1045,6 @@ async def run_subscription_bot():
     except Exception as e:
         log_error(f"[SUB-BOT] Ошибка: {e}")
 
-# ===== ГЛАВНЫЙ БОТ =====
 async def main_bot():
     try:
         bot = TelegramClient('bot_session', API_ID, API_HASH)
@@ -1037,6 +1066,14 @@ async def main_bot():
                     active_messages[user_id] = await event.reply(text, buttons=buttons)
             except:
                 active_messages[user_id] = await event.reply(text, buttons=buttons)
+
+        def get_user_identifier(event):
+            user = event.sender
+            if user.username:
+                return f"@{user.username}"
+            else:
+                return f"ID {user.id}"
+
         @bot.on(events.NewMessage(pattern='/start'))
         async def start_handler(event):
             await event.delete()
@@ -1054,6 +1091,7 @@ async def main_bot():
                 await update_message(event, f"📌 {BOT_NAME}", buttons)
             else:
                 await update_message(event, f"🚫 ДОСТУП ЗАПРЕЩЁН\n\nДля покупки напишите:\n{DEVELOPER_LINK}")
+
         @bot.on(events.CallbackQuery)
         async def handle_callbacks(event):
             await event.answer()
@@ -1065,6 +1103,7 @@ async def main_bot():
                 pass
             async def upd(text, buttons=None):
                 await update_message(event, text, buttons)
+
             if data == "main_menu":
                 if not has_subscription(user_id):
                     await upd(f"🔒 ДОСТУП ОГРАНИЧЕН\n\nКупить: {DEVELOPER_LINK}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
@@ -1078,6 +1117,7 @@ async def main_bot():
                 ]
                 await upd("📋 МЕНЮ", buttons)
                 return
+
             if data == "profile":
                 user_entity = await event.client.get_entity(user_id)
                 username = f"@{user_entity.username}" if user_entity.username else "—"
@@ -1085,23 +1125,65 @@ async def main_bot():
                 status = "⭐" if has_subscription(user_id) else "🏠"
                 await upd(f"👤 ПРОФИЛЬ\n\nID: {user_id}\nЮзернейм: {username}\nСтатус: {status}\nЖалоб: {len(user_reports)}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                 return
+
             if data == "developer":
                 await upd(f"👨‍💻 РАЗРАБОТЧИК\n\n{DEVELOPER_LINK}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                 return
+
             if data == "history":
                 history = [r for r in load_data().get('reports', []) if r.get('user') == user_id]
                 if not history:
                     await upd("📜 ИСТОРИЯ\n\nНет записей.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
-                text = "📜 ИСТОРИЯ\n\n"
-                for i, r in enumerate(history[-10:], 1):
+                # Пагинация
+                page = user_data.get(user_id, {}).get('history_page', 0)
+                items_per_page = 5
+                total_pages = max(1, (len(history) + items_per_page - 1) // items_per_page)
+                if page >= total_pages:
+                    page = total_pages - 1
+                start = page * items_per_page
+                end = min(start + items_per_page, len(history))
+                text = f"📜 ИСТОРИЯ (стр. {page+1}/{total_pages})\n\n"
+                for i, r in enumerate(history[start:end], start+1):
                     status = "✅" if "успешно" in r.get('destination', '').lower() else "⏳"
                     text += f"{i}. {r.get('target', '')} - {status} - {r.get('type', '')}\n"
-                buttons = [
-                    [KeyboardButtonCallback("🔙 Назад", b"back_to_start")]
-                ]
-                await upd(text, buttons)
+                buttons = []
+                if page > 0:
+                    buttons.append(KeyboardButtonCallback("⬅️ Назад", f"history_{page-1}"))
+                if page < total_pages - 1:
+                    buttons.append(KeyboardButtonCallback("➡️ Вперёд", f"history_{page+1}"))
+                buttons.append(KeyboardButtonCallback("📥 Скачать PDF", b"download_pdf"))
+                buttons.append(KeyboardButtonCallback("🔙 Назад", b"back_to_start"))
+                await upd(text, [buttons] if buttons else None)
                 return
+
+            if data.startswith("history_"):
+                page = int(data.split("_")[1])
+                if user_id not in user_data:
+                    user_data[user_id] = {}
+                user_data[user_id]['history_page'] = page
+                # Перезапускаем историю
+                await handle_callbacks(event)  # Рекурсивно вызываем для обновления
+                return
+
+            if data == "download_pdf":
+                if not REPORTLAB_AVAILABLE:
+                    await upd("❌ Ошибка: библиотека reportlab не установлена", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
+                    return
+                history = [r for r in load_data().get('reports', []) if r.get('user') == user_id]
+                if not history:
+                    await upd("📜 Нет отчётов для экспорта.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
+                    return
+                pdf_buffer = generate_pdf(user_id, history)
+                if pdf_buffer is None:
+                    await upd("❌ Ошибка генерации PDF", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
+                    return
+                try:
+                    await event.reply(file=pdf_buffer, force_document=True)
+                except Exception as e:
+                    await upd(f"❌ Ошибка отправки PDF: {str(e)[:50]}", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
+                return
+
             if data == "back_to_start":
                 if has_subscription(user_id):
                     buttons = [
@@ -1113,6 +1195,7 @@ async def main_bot():
                 else:
                     await upd(f"🚫 ДОСТУП ЗАПРЕЩЁН\n\nДля покупки напишите:\n{DEVELOPER_LINK}")
                 return
+
             if data == "mix_menu":
                 if not has_subscription(user_id):
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
@@ -1120,6 +1203,7 @@ async def main_bot():
                 user_states[user_id] = 'waiting_mix_target'
                 await upd("📤 МИКС\n\nОтправь ссылку\n@username или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+
             if data == "telethon_report":
                 if not has_subscription(user_id):
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
@@ -1127,6 +1211,7 @@ async def main_bot():
                 user_states[user_id] = 'waiting_telethon_target'
                 await upd("⚡ TELEHON\n\nОтправь ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+
             if data == "operator":
                 if not has_subscription(user_id):
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
@@ -1134,6 +1219,7 @@ async def main_bot():
                 user_states[user_id] = 'waiting_operator_target'
                 await upd("👤 ОПЕРАТОР\n\nОтправь юзернейм\n@username или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+
             if data == "ai_analyze":
                 if not has_subscription(user_id):
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
@@ -1141,6 +1227,7 @@ async def main_bot():
                 user_states[user_id] = 'waiting_ai_target'
                 await upd("🔍 AI-АНАЛИЗ\n\nОтправь ссылку\n@channel или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+
             if data == "mix_drugs_yes":
                 if user_id not in user_data:
                     user_data[user_id] = {}
@@ -1148,6 +1235,7 @@ async def main_bot():
                 user_states[user_id] = 'waiting_mix_description'
                 await upd("📝 ОПИСАНИЕ\n\nТип; Причина; Ссылки\nПример: Канал; продажа; https://t.me/x/12", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+
             if data == "mix_drugs_no":
                 if user_id not in user_data:
                     user_data[user_id] = {}
@@ -1155,6 +1243,7 @@ async def main_bot():
                 user_states[user_id] = 'waiting_mix_description'
                 await upd("📝 ОПИСАНИЕ\n\nТип; Причина; Ссылки\nПример: Канал; продажа; https://t.me/x/12", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+
             if data.startswith("send_ai_report_"):
                 try:
                     target_user_id = int(data.split("_")[3])
@@ -1180,8 +1269,10 @@ async def main_bot():
                     'links': links
                 })
                 save_data(data)
+                await send_log_to_channel(f"📥 Пользователь {get_user_identifier(event)} отправил жалобу через AI на {target}")
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+
         @bot.on(events.NewMessage)
         async def handle_messages(event):
             if event.message.text and event.message.text.startswith('/'):
@@ -1192,6 +1283,7 @@ async def main_bot():
             await event.delete()
             async def upd(msg_text, buttons=None):
                 await update_message(event, msg_text, buttons)
+
             if state == 'waiting_mix_target':
                 if 't.me/' in text or text.startswith('@'):
                     target = text
@@ -1208,6 +1300,7 @@ async def main_bot():
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+
             if state == 'waiting_telethon_target':
                 if 't.me/' in text or text.startswith('@'):
                     target = text
@@ -1223,10 +1316,12 @@ async def main_bot():
                         'user': user_id
                     })
                     save_data(data)
+                    await send_log_to_channel(f"📥 Пользователь {get_user_identifier(event)} отправил Telethon жалобу на {target}")
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+
             if state == 'waiting_operator_target':
                 if 't.me/' in text or text.startswith('@'):
                     username = text
@@ -1238,14 +1333,16 @@ async def main_bot():
                         'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                         'target': username,
                         'type': 'Оператор',
-                        'destination': 'Telegram API',
+                        'destination': 'Веб/Микс',
                         'user': user_id
                     })
                     save_data(data)
+                    await send_log_to_channel(f"📥 Пользователь {get_user_identifier(event)} отправил жалобу на оператора @{username}")
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
                     await upd("❌ Неверный юзернейм.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+
             if state == 'waiting_ai_target':
                 if 't.me/' in text or text.startswith('@'):
                     target = text
@@ -1254,6 +1351,7 @@ async def main_bot():
                         user_data[user_id] = {}
                     user_data[user_id]['last_ai_target'] = target
                     await upd("⏳ Сканирование...")
+                    await send_log_to_channel(f"📥 Пользователь {get_user_identifier(event)} запросил AI-анализ: {target}")
                     result, error = await analyzer.analyze_target(target, user_id, bot)
                     if error:
                         await upd(f"{error}", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1275,11 +1373,12 @@ async def main_bot():
                         [KeyboardButtonCallback("🚀 Отправить жалобу", f"send_ai_report_{user_id}")],
                         [KeyboardButtonCallback("🔙 Назад", b"main_menu")]
                     ]
-                    user_data[user_id]['last_ai_description'] = f"Violation type: {violation}. Found in {len(messages)} messages." if 'messages' in locals() else "Violation detected"
+                    user_data[user_id]['last_ai_description'] = f"Violation type: {violation}. Found in {len(result.get('messages', []))} messages."
                     await upd(report, buttons)
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+
             if state == 'waiting_mix_description':
                 description = text
                 target = user_data.get(user_id, {}).get('target')
@@ -1292,6 +1391,7 @@ async def main_bot():
                 evidence_links = parts[2].strip() if len(parts) > 2 else ""
                 violation = "drugs" if drugs == 'yes' else "violation"
                 links = [link.strip() for link in evidence_links.split(',')] if evidence_links else []
+                await upd("⏳ Генерация текста жалобы через AI...")
                 text = await generate_complaint_text(target, violation, description, links)
                 user_states.pop(user_id, None)
                 await upd("⏳ Отправка микс-жалобы...")
@@ -1306,8 +1406,10 @@ async def main_bot():
                     'links': links
                 })
                 save_data(data)
+                await send_log_to_channel(f"📥 Пользователь {get_user_identifier(event)} отправил Микс-жалобу на {target}")
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
+
         @bot.on(events.NewMessage(pattern='/cancel'))
         async def cancel(event):
             user_id = event.sender_id
@@ -1330,9 +1432,8 @@ async def main_bot():
         print("Bot ready")
         await bot.run_until_disconnected()
     except Exception as e:
-        log_error(f"Main bot error: {e}")
+        log_error(f"Error in main_bot: {e}")
 
-# ===== ЗАПУСК =====
 async def main():
     http_task = asyncio.create_task(start_http_server())
     main_task = asyncio.create_task(main_bot())
