@@ -132,16 +132,53 @@ def has_subscription(user_id):
     except:
         return False
 
-async def send_log_to_channel(text):
-    """Отправляет лог в канал через главного бота"""
+async def send_log_to_channel(
+    user_id: int,
+    username: str = None,
+    method: str = "Микс",
+    target: str = None,
+    au_success: int = 0,
+    au_total: int = 0,
+    tida_success: int = 0,
+    tida_total: int = 0,
+    au_text: str = None,
+    tida_text: str = None,
+    status: str = "✅ Отправка завершена",
+    error: str = None
+):
+    """Отправляет структурированный лог в канал"""
     global bot_instance
-    if bot_instance:
-        try:
-            await bot_instance.send_message(CHANNEL_ID, text)
-        except Exception as e:
-            log_error(f"Channel log error: {e}")
+    if not bot_instance:
+        return
+    if username:
+        user_display = f"@{username} (ID: {user_id})"
     else:
-        log_error(f"Bot not initialized, log: {text}")
+        user_display = f"ID: {user_id}"
+    log_text = f"{status}\n"
+    log_text += f"👤 Пользователь: {user_display}\n"
+    log_text += f"🚀 Метод: {method}\n"
+    if target:
+        log_text += f"🔗 Ссылка: {target}\n"
+    if error:
+        log_text += f"❌ Ошибка: {error}\n"
+    else:
+        if method in ["Микс", "Mix"]:
+            au_total = au_total or 0
+            tida_total = tida_total or 0
+            total_success = au_success + tida_success
+            total_total = au_total + tida_total
+            log_text += f"📊 AU: {au_success}/{au_total} | TIDA: {tida_success}/{tida_total}\n"
+            log_text += f"🔎 Итого: {total_success}/{total_total}\n"
+            if au_text:
+                log_text += f"\n📝 AU текст:\n{au_text}\n"
+            if tida_text:
+                log_text += f"\n📝 TIDA текст:\n{tida_text}\n"
+        elif method in ["Telethon", "Оператор"]:
+            log_text += f"📊 Результат: {au_success}/{au_total}\n"
+    try:
+        await bot_instance.send_message(CHANNEL_ID, log_text)
+    except Exception as e:
+        log_error(f"Channel log error: {e}")
 
 def generate_phone():
     return f"+7{random.randint(1000000000, 9999999999)}"
@@ -387,7 +424,11 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
     total = len(all_sessions)
     au_sessions = [s for s in all_sessions if 'au' in s]
     us_sessions = [s for s in all_sessions if 'us' in s]
+    au_success = 0
+    tida_success = 0
     current = 0
+    au_texts = []
+    tida_texts = []
 
     print(f"\n📤 Микс — отправка на {target}")
     print(f"📁 Сессий AU: {len(au_sessions)}, US: {len(us_sessions)}")
@@ -443,6 +484,8 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
                             continue
                         break
                     break
+            au_success += 1
+            au_texts.append(text)
             print(f"[AU] {session_name} ✅ Отправлено")
         except Exception as e:
             print(f"[AU] {session_name} ❌ {str(e)[:50]}")
@@ -500,6 +543,8 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
                             continue
                         break
                     break
+            tida_success += 1
+            tida_texts.append(text)
             print(f"[US] {session_name} ✅ Отправлено")
         except Exception as e:
             print(f"[US] {session_name} ❌ {str(e)[:50]}")
@@ -507,6 +552,23 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             await client.disconnect()
 
     print(f"\n📊 Микс — отправлено {current}/{total} сессий")
+    
+    # Логируем результат
+    au_text_full = "\n".join(au_texts[:1]) if au_texts else None
+    tida_text_full = "\n".join(tida_texts[:1]) if tida_texts else None
+    await send_log_to_channel(
+        user_id=user_id,
+        username=None,  # будет передан из main_bot
+        method="Микс",
+        target=target,
+        au_success=au_success,
+        au_total=len(au_sessions),
+        tida_success=tida_success,
+        tida_total=len(us_sessions),
+        au_text=au_text_full,
+        tida_text=tida_text_full,
+        status="✅ Отправка завершена"
+    )
     return "✅ Микс-жалоба отправлена!"
 
 async def send_operator_report(user_id, username, edit_callback=None):
@@ -522,7 +584,15 @@ async def send_operator_report(user_id, username, edit_callback=None):
         success, msg = await send_web_report(RUCAPTCHA_API_KEY, name, phone, text)
         if success:
             result = f"✅ Оператор {username} — жалоба отправлена (веб)"
-            await send_log_to_channel(f"✅ Оператор {username} — жалоба отправлена (веб)")
+            await send_log_to_channel(
+                user_id=user_id,
+                username=None,
+                method="Оператор",
+                target=target,
+                au_success=1,
+                au_total=1,
+                status="✅ Отправка завершена (веб)"
+            )
             if edit_callback:
                 await edit_callback(result)
             return result
@@ -535,9 +605,25 @@ async def send_operator_report(user_id, username, edit_callback=None):
         mix_result = await send_mix_report(user_id, target, text, edit_callback=None)
         if "✅" in mix_result:
             result = f"✅ Оператор {username} — жалоба отправлена (микс)"
-            await send_log_to_channel(f"✅ Оператор {username} — жалоба отправлена (микс)")
+            await send_log_to_channel(
+                user_id=user_id,
+                username=None,
+                method="Оператор (микс)",
+                target=target,
+                au_success=1,
+                au_total=1,
+                status="✅ Отправка завершена (микс)"
+            )
         else:
             result = f"❌ Оператор {username} — не удалось отправить жалобу"
+            await send_log_to_channel(
+                user_id=user_id,
+                username=None,
+                method="Оператор",
+                target=target,
+                status="❌ Ошибка отправки",
+                error="Не удалось отправить жалобу ни через веб, ни через микс"
+            )
         
         if edit_callback:
             await edit_callback(result)
@@ -630,6 +716,16 @@ async def send_telethon_report(user_id, target, edit_callback=None):
     await asyncio.gather(*tasks)
 
     print(f"\n📊 Результат: {success_count}/{total} успешно, {errors} ошибок")
+
+    await send_log_to_channel(
+        user_id=user_id,
+        username=None,
+        method="Telethon",
+        target=target,
+        au_success=success_count,
+        au_total=total,
+        status="✅ Отправка завершена"
+    )
 
     result = f"✅ Telethon — ОТПРАВЛЕНО ({success_count}/{total})"
     if errors > 0:
@@ -814,9 +910,26 @@ class AIAnalyzer:
         self.last_result = result
 
         if result.get("violation"):
-            await send_log_to_channel(f"🔍 AI Анализ: {target}\n⚠️ Нарушение: {result['violation'].upper()} ({result.get('severity', 'medium').upper()})\n📝 Объяснение: {result.get('explanation', '')}")
+            await send_log_to_channel(
+                user_id=user_id,
+                username=None,
+                method="AI-анализ",
+                target=target,
+                au_success=1,
+                au_total=1,
+                status=f"🔍 Нарушение: {result['violation'].upper()} ({result.get('severity', 'medium').upper()})",
+                error=result.get('explanation', '')
+            )
         else:
-            await send_log_to_channel(f"🔍 AI Анализ: {target}\n✅ Нарушений не найдено")
+            await send_log_to_channel(
+                user_id=user_id,
+                username=None,
+                method="AI-анализ",
+                target=target,
+                au_success=0,
+                au_total=1,
+                status="✅ Нарушений не найдено"
+            )
 
         return result, None
 
@@ -1275,7 +1388,6 @@ async def main_bot():
                     'links': links
                 })
                 save_data(data)
-                await send_log_to_channel(f"📥 Пользователь {get_user_identifier(event)} отправил жалобу через AI на {target}")
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
@@ -1322,7 +1434,6 @@ async def main_bot():
                         'user': user_id
                     })
                     save_data(data)
-                    await send_log_to_channel(f"📥 Пользователь {get_user_identifier(event)} отправил Telethon жалобу на {target}")
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1343,7 +1454,6 @@ async def main_bot():
                         'user': user_id
                     })
                     save_data(data)
-                    await send_log_to_channel(f"📥 Пользователь {get_user_identifier(event)} отправил жалобу на оператора @{username}")
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
                     await upd("❌ Неверный юзернейм.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1357,7 +1467,6 @@ async def main_bot():
                         user_data[user_id] = {}
                     user_data[user_id]['last_ai_target'] = target
                     await upd("⏳ Сканирование...")
-                    await send_log_to_channel(f"📥 Пользователь {get_user_identifier(event)} запросил AI-анализ: {target}")
                     result, error = await analyzer.analyze_target(target, user_id, bot)
                     if error:
                         await upd(f"{error}", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1412,7 +1521,6 @@ async def main_bot():
                     'links': links
                 })
                 save_data(data)
-                await send_log_to_channel(f"📥 Пользователь {get_user_identifier(event)} отправил Микс-жалобу на {target}")
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
