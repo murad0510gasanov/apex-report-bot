@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (С МЕЙЛЕРОМ)
+# app.py — APEX REPORT (ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ)
 import os
 import sys
 import json
@@ -834,7 +834,9 @@ class AIAnalyzer:
                 results[category] = min(50 + (count * 10), 100)
             else:
                 results[category] = 0
-        return results    def get_violation(self, results):
+        return results
+
+    def get_violation(self, results):
         sorted_results = sorted(results.items(), key=lambda x: x[1], reverse=True)
         for cat, percent in sorted_results:
             if percent >= 30:
