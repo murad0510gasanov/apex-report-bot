@@ -411,10 +411,15 @@ Format:
         return {"error": f"Ошибка AI: {str(e)[:100]}"}
 
 async def generate_complaint_text(target, violation, description, links):
+    # Формируем ссылку без @
+    clean_target = target.replace('@', '')
+    if not clean_target.startswith('http'):
+        clean_target = f"https://t.me/{clean_target}"
+    
     prompt = f"""Generate a formal complaint in English based on this description:
 {description}
 
-Channel: {target}
+Channel: {clean_target}
 Violation type: {violation}
 Links to violating messages: {', '.join(links) if links else 'No specific links'}
 
@@ -434,9 +439,9 @@ Write a formal complaint without any urgent words. Use only English. Keep it con
                     data = await resp.json()
                     return data['choices'][0]['message']['content'].strip()
                 else:
-                    return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {target}\n\n{description}\n\nReported messages:\n{chr(10).join(links) if links else 'No specific links'}\n\nPlease review this content and take appropriate action.\n\nThank you."
+                    return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {clean_target}\n\n{description}\n\nReported messages:\n{chr(10).join(links) if links else 'No specific links'}\n\nPlease review this content and take appropriate action.\n\nThank you."
     except:
-        return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {target}\n\n{description}\n\nReported messages:\n{chr(10).join(links) if links else 'No specific links'}\n\nPlease review this content and take appropriate action.\n\nThank you."
+        return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {clean_target}\n\n{description}\n\nReported messages:\n{chr(10).join(links) if links else 'No specific links'}\n\nPlease review this content and take appropriate action.\n\nThank you."
 
 def generate_pdf(user_id, reports):
     if not REPORTLAB_AVAILABLE:
@@ -469,6 +474,29 @@ def generate_pdf(user_id, reports):
     buffer.seek(0)
     return buffer
 
+def is_valid_target(text):
+    """Проверяет, является ли текст ссылкой на Telegram"""
+    if not text:
+        return False
+    # Проверяем, что начинается с @ или содержит t.me/
+    if text.startswith('@'):
+        return True
+    if 't.me/' in text:
+        return True
+    return False
+
+def clean_target(text):
+    """Очищает цель, убирая лишние символы"""
+    text = text.strip()
+    # Если это @username — оставляем как есть
+    if text.startswith('@'):
+        return text
+    # Если это t.me/ — оставляем как есть
+    if 't.me/' in text:
+        return text
+    # Иначе возвращаем как есть (но такого быть не должно)
+    return text
+
 async def send_mix_report(user_id, target, text, edit_callback=None):
     all_sessions = []
     if os.path.exists(AU_DIR):
@@ -485,6 +513,11 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             await edit_callback("❌ Нет сессий для микса (AU + US)")
         return "❌ Нет сессий для микса"
 
+    # Формируем чистую ссылку для отправки в боты
+    clean_target = target.replace('@', '')
+    if not clean_target.startswith('http'):
+        clean_target = f"https://t.me/{clean_target}"
+
     total = len(all_sessions)
     au_sessions = [s for s in all_sessions if 'au' in s]
     us_sessions = [s for s in all_sessions if 'us' in s]
@@ -494,7 +527,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
     au_texts = []
     tida_texts = []
 
-    print(f"\n📤 Микс — отправка на {target}")
+    print(f"\n📤 Микс — отправка на {clean_target}")
     print(f"📁 Сессий AU: {len(au_sessions)}, US: {len(us_sessions)}")
 
     for session_path in au_sessions:
@@ -508,7 +541,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             print(f"[AU] {session_name} ⏳ Отправка... ({current}/{total})")
             await client.send_message('@AUReportBot', '/start')
             await asyncio.sleep(2)
-            await client.send_message('@AUReportBot', target)
+            await client.send_message('@AUReportBot', clean_target)  # Отправляем ссылку без @
             await asyncio.sleep(2)
             async for msg in client.iter_messages('@AUReportBot', limit=5):
                 if msg.buttons:
@@ -567,7 +600,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             print(f"[US] {session_name} ⏳ Отправка... ({current}/{total})")
             await client.send_message('@TIDABot', '/start')
             await asyncio.sleep(2)
-            await client.send_message('@TIDABot', target)
+            await client.send_message('@TIDABot', clean_target)  # Отправляем ссылку без @
             await asyncio.sleep(2)
             async for msg in client.iter_messages('@TIDABot', limit=5):
                 if msg.buttons:
@@ -623,7 +656,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
         user_id=user_id,
         username=None,
         method="Микс",
-        target=target,
+        target=clean_target,
         au_success=au_success,
         au_total=len(au_sessions),
         tida_success=tida_success,
@@ -636,36 +669,38 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
 
 async def send_operator_report(user_id, username, edit_callback=None):
     try:
-        username = username.replace('https://t.me/', '').replace('@', '')
-        target = f"@{username}"
-        text = f"This account @{username} is a known operator of a drug shop. It violates Telegram's Terms of Service by facilitating the sale of illegal substances."
+        # Формируем чистую ссылку (без @)
+        clean_username = username.replace('https://t.me/', '').replace('@', '')
+        target_link = f"https://t.me/{clean_username}"
         
-        result = await send_mix_report(user_id, target, text, edit_callback=None)
+        text = f"This account {target_link} is a known operator of a drug shop. It violates Telegram's Terms of Service by facilitating the sale of illegal substances."
+        
+        result = await send_mix_report(user_id, target_link, text, edit_callback=None)
         if "✅" in result:
             await send_log_to_channel(
                 user_id=user_id,
                 username=None,
                 method="Оператор (микс)",
-                target=target,
+                target=target_link,
                 au_success=1,
                 au_total=1,
                 status="✅ Отправка завершена"
             )
             if edit_callback:
-                await edit_callback(f"✅ Оператор {username} — жалоба отправлена (микс)")
-            return f"✅ Оператор {username} — жалоба отправлена (микс)"
+                await edit_callback(f"✅ Оператор {clean_username} — жалоба отправлена (микс)")
+            return f"✅ Оператор {clean_username} — жалоба отправлена (микс)"
         else:
             await send_log_to_channel(
                 user_id=user_id,
                 username=None,
                 method="Оператор (микс)",
-                target=target,
+                target=target_link,
                 status="❌ Ошибка отправки",
                 error="Не удалось отправить жалобу через микс"
             )
             if edit_callback:
-                await edit_callback(f"❌ Оператор {username} — не удалось отправить жалобу")
-            return f"❌ Оператор {username} — не удалось отправить жалобу"
+                await edit_callback(f"❌ Оператор {clean_username} — не удалось отправить жалобу")
+            return f"❌ Оператор {clean_username} — не удалось отправить жалобу"
     except Exception as e:
         result = f"❌ Ошибка: {str(e)[:50]}"
         if edit_callback:
@@ -720,94 +755,182 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             await edit_callback("❌ Неверная ссылка")
         return "❌ Неверная ссылка"
 
-    message_link_pattern = r'https://t\.me/([^/]+)/(\d+)'
-    match = re.search(message_link_pattern, target)
-    if match:
-        chat_username = match.group(1)
-        is_message = True
-    else:
-        is_message = False
-        if 't.me/' in target:
-            target = target.replace('https://t.me/', '')
-            if '/' in target:
-                target = target.split('/')[0]
-        if not target.startswith('@'):
-            target = '@' + target
-
-    total = len(all_sessions)
-    errors = 0
-    success_count = 0
-
-    print(f"\n📤 Telethon — отправка на {target}")
-    print(f"📁 Всего сессий: {total}")
-
-    async def send_one(session_path, index):
-        nonlocal errors, success_count
-        session_name = os.path.basename(session_path)
-        client = await try_connect(session_path, timeout=20, retries=3)
+    # Проверяем, является ли цель ботом (по наличию @ в начале или t.me/ без ID сообщения)
+    is_bot = False
+    if target.startswith('@'):
+        # Проверяем, что это не канал с ID сообщения
+        if '/' not in target:
+            is_bot = True
+    elif 't.me/' in target:
+        # Если в ссылке нет ID сообщения (/число) — считаем ботом
+        if not re.search(r't\.me/[^/]+/\d+', target):
+            is_bot = True
+    
+    # Если цель — бот, используем только одну сессию и имитируем поведение микса
+    if is_bot:
+        # Берём первую живую сессию
+        client = None
+        for session_path in all_sessions:
+            client = await try_connect(session_path, timeout=15, retries=2)
+            if client:
+                break
+        
         if not client:
-            errors += 1
-            print(f"[{session_name}] ❌ Не удалось подключиться")
-            return
-
+            if edit_callback:
+                await edit_callback("❌ Нет живых сессий для отправки боту")
+            return "❌ Нет живых сессий для отправки боту"
+        
         try:
-            if is_message:
-                try:
-                    chat = await client.get_entity(chat_username)
-                    await client(ReportPeerRequest(peer=chat, reason=InputReportReasonSpam(), message=""))
-                    success_count += 1
-                    print(f"[{session_name}] ✅ Успешно")
-                except UsernameNotOccupiedError:
-                    errors += 1
-                    print(f"[{session_name}] ❌ Канал не найден")
-                except FloodWaitError as e:
-                    errors += 1
-                    print(f"[{session_name}] ⏳ FloodWait {e.seconds} сек")
-                    await asyncio.sleep(min(e.seconds, 30))
-                except Exception as e:
-                    errors += 1
-                    print(f"[{session_name}] ❌ {str(e)[:50]}")
-            else:
-                try:
-                    entity = await client.get_entity(target)
-                    await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
-                    success_count += 1
-                    print(f"[{session_name}] ✅ Успешно")
-                except UsernameNotOccupiedError:
-                    errors += 1
-                    print(f"[{session_name}] ❌ Цель не найдена")
-                except FloodWaitError as e:
-                    errors += 1
-                    print(f"[{session_name}] ⏳ FloodWait {e.seconds} сек")
-                    await asyncio.sleep(min(e.seconds, 30))
-                except Exception as e:
-                    errors += 1
-                    print(f"[{session_name}] ❌ {str(e)[:50]}")
-        finally:
+            # Очищаем цель
+            clean_target = target.replace('@', '').replace('https://t.me/', '')
+            bot_username = f"@{clean_target}"
+            
+            print(f"[Telethon-Bot] Отправка на {bot_username}")
+            
+            # Отправляем /start
+            await client.send_message(bot_username, '/start')
+            await asyncio.sleep(2)
+            
+            # Отправляем ссылку (без @)
+            link = f"https://t.me/{clean_target}"
+            await client.send_message(bot_username, link)
+            await asyncio.sleep(2)
+            
+            # Ищем кнопку "Жалоба" или "Report" или "Пожаловаться"
+            found_button = False
+            async for msg in client.iter_messages(bot_username, limit=10):
+                if msg.buttons:
+                    for row in msg.buttons:
+                        for btn in row:
+                            btn_text = btn.text.lower() if btn.text else ''
+                            if any(keyword in btn_text for keyword in ['жалоб', 'report', 'пожаловаться', 'complaint']):
+                                await btn.click()
+                                await asyncio.sleep(1)
+                                found_button = True
+                                print(f"[Telethon-Bot] Нажата кнопка: {btn.text}")
+                                break
+                        if found_button:
+                            break
+                    if found_button:
+                        break
+            
+            if not found_button:
+                print(f"[Telethon-Bot] ⚠️ Кнопка жалобы не найдена")
+            
             await client.disconnect()
+            
+            if edit_callback:
+                await edit_callback("✅ Telethon — отправлено (бот)")
+            await send_log_to_channel(
+                user_id=user_id,
+                username=None,
+                method="Telethon (бот)",
+                target=target,
+                au_success=1,
+                au_total=1,
+                status="✅ Отправка завершена"
+            )
+            return "✅ Telethon — отправлено (бот)"
+            
+        except Exception as e:
+            if client:
+                await client.disconnect()
+            error_msg = f"❌ Ошибка отправки боту: {str(e)[:50]}"
+            if edit_callback:
+                await edit_callback(error_msg)
+            return error_msg
+    
+    # Если цель — не бот (канал/пользователь), используем все сессии параллельно
+    else:
+        # Определяем, является ли цель сообщением или каналом
+        message_link_pattern = r'https://t\.me/([^/]+)/(\d+)'
+        match = re.search(message_link_pattern, target)
+        if match:
+            chat_username = match.group(1)
+            is_message = True
+        else:
+            is_message = False
+            if 't.me/' in target:
+                target = target.replace('https://t.me/', '')
+                if '/' in target:
+                    target = target.split('/')[0]
+            if not target.startswith('@'):
+                target = '@' + target
 
-    tasks = [send_one(session_path, i+1) for i, session_path in enumerate(all_sessions)]
-    await asyncio.gather(*tasks)
+        total = len(all_sessions)
+        errors = 0
+        success_count = 0
 
-    print(f"\n📊 Результат: {success_count}/{total} успешно, {errors} ошибок")
+        print(f"\n📤 Telethon — отправка на {target}")
+        print(f"📁 Всего сессий: {total}")
 
-    await send_log_to_channel(
-        user_id=user_id,
-        username=None,
-        method="Telethon",
-        target=target,
-        au_success=success_count,
-        au_total=total,
-        status="✅ Отправка завершена"
-    )
+        async def send_one(session_path, index):
+            nonlocal errors, success_count
+            session_name = os.path.basename(session_path)
+            client = await try_connect(session_path, timeout=20, retries=3)
+            if not client:
+                errors += 1
+                print(f"[{session_name}] ❌ Не удалось подключиться")
+                return
 
-    result = f"✅ Telethon — ОТПРАВЛЕНО ({success_count}/{total})"
-    if errors > 0:
-        result += f"\n⚠️ Ошибок: {errors}"
+            try:
+                if is_message:
+                    try:
+                        chat = await client.get_entity(chat_username)
+                        await client(ReportPeerRequest(peer=chat, reason=InputReportReasonSpam(), message=""))
+                        success_count += 1
+                        print(f"[{session_name}] ✅ Успешно")
+                    except UsernameNotOccupiedError:
+                        errors += 1
+                        print(f"[{session_name}] ❌ Канал не найден")
+                    except FloodWaitError as e:
+                        errors += 1
+                        print(f"[{session_name}] ⏳ FloodWait {e.seconds} сек")
+                        await asyncio.sleep(min(e.seconds, 30))
+                    except Exception as e:
+                        errors += 1
+                        print(f"[{session_name}] ❌ {str(e)[:50]}")
+                else:
+                    try:
+                        entity = await client.get_entity(target)
+                        await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
+                        success_count += 1
+                        print(f"[{session_name}] ✅ Успешно")
+                    except UsernameNotOccupiedError:
+                        errors += 1
+                        print(f"[{session_name}] ❌ Цель не найдена")
+                    except FloodWaitError as e:
+                        errors += 1
+                        print(f"[{session_name}] ⏳ FloodWait {e.seconds} сек")
+                        await asyncio.sleep(min(e.seconds, 30))
+                    except Exception as e:
+                        errors += 1
+                        print(f"[{session_name}] ❌ {str(e)[:50]}")
+            finally:
+                await client.disconnect()
 
-    if edit_callback:
-        await edit_callback(result)
-    return result
+        tasks = [send_one(session_path, i+1) for i, session_path in enumerate(all_sessions)]
+        await asyncio.gather(*tasks)
+
+        print(f"\n📊 Результат: {success_count}/{total} успешно, {errors} ошибок")
+
+        await send_log_to_channel(
+            user_id=user_id,
+            username=None,
+            method="Telethon",
+            target=target,
+            au_success=success_count,
+            au_total=total,
+            status="✅ Отправка завершена"
+        )
+
+        result = f"✅ Telethon — ОТПРАВЛЕНО ({success_count}/{total})"
+        if errors > 0:
+            result += f"\n⚠️ Ошибок: {errors}"
+
+        if edit_callback:
+            await edit_callback(result)
+        return result
 
 class AIAnalyzer:
     def __init__(self):
@@ -1406,7 +1529,7 @@ async def main_bot():
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
                 user_states[user_id] = 'waiting_telethon_target'
-                await upd("⚡ TELEHON\n\nОтправь ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                await upd("⚡ TELEHON\n\nОтправь ссылку\n@username или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if data == "operator":
@@ -1490,6 +1613,63 @@ async def main_bot():
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
+            # Новая кнопка для отправки писем в mailer
+            if data == "send_mail":
+                if user_id not in user_data or 'mail_targets' not in user_data[user_id]:
+                    await upd("❌ Ошибка: нет данных для рассылки.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    return
+                
+                targets = user_data[user_id].get('mail_targets', [])
+                if not targets:
+                    await upd("❌ Нет получателей.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    user_states.pop(user_id, None)
+                    return
+                
+                subject = user_data[user_id].get('mail_subject', '')
+                body = user_data[user_id].get('mail_body', '')
+                creds = load_mail_creds()
+                max_mails = len(creds)
+                
+                if max_mails == 0:
+                    await upd("❌ Нет аккаунтов в mail.txt", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    user_states.pop(user_id, None)
+                    return
+                
+                await upd(f"⏳ Отправка писем...\n📊 Аккаунтов: {max_mails}\n📧 Получателей: {len(targets)}\n⏳ Подождите...")
+                
+                # Запускаем рассылку в отдельном потоке
+                loop = asyncio.get_running_loop()
+                results = await loop.run_in_executor(
+                    None,
+                    run_mailer,
+                    creds,
+                    targets,
+                    subject,
+                    body,
+                    max_mails
+                )
+                
+                success_count = sum(1 for r in results if "УСПЕШНО" in r)
+                error_count = len(results) - success_count
+                
+                # Логируем в канал
+                await send_log_to_channel(
+                    user_id=user_id,
+                    username=None,
+                    method="Рассылка",
+                    target="email",
+                    au_success=success_count,
+                    au_total=len(results),
+                    status="✅ Рассылка завершена"
+                )
+                
+                # Показываем пользователю
+                report_text = f"📧 РАССЫЛКА ЗАВЕРШЕНА\n\n✅ Успешно: {success_count}\n❌ Ошибок: {error_count}\n📊 Всего: {len(results)}"
+                await upd(report_text, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                user_states.pop(user_id, None)
+                user_data.pop(user_id, None)
+                return
+
         @bot.on(events.NewMessage)
         async def handle_messages(event):
             if event.message.text and event.message.text.startswith('/'):
@@ -1497,13 +1677,16 @@ async def main_bot():
             user_id = event.sender_id
             text = event.message.text.strip()
             state = user_states.get(user_id)
-            await event.delete()
+            # НЕ УДАЛЯЕМ СООБЩЕНИЯ ПОЛЬЗОВАТЕЛЯ
+            # await event.delete()  <-- УБРАНО!
+            
             async def upd(msg_text, buttons=None):
                 await update_message(event, msg_text, buttons)
 
             if state == 'waiting_mix_target':
-                if 't.me/' in text or text.startswith('@'):
-                    target = text
+                # Проверяем, что введено @username или t.me/...
+                if is_valid_target(text):
+                    target = clean_target(text)
                     if user_id not in user_data:
                         user_data[user_id] = {}
                     user_data[user_id]['target'] = target
@@ -1515,12 +1698,12 @@ async def main_bot():
                     ]
                     await upd("Наркотики?", buttons)
                 else:
-                    await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    await upd("❌ Пришлите ссылку (например, @username или https://t.me/username)", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_telethon_target':
-                if 't.me/' in text or text.startswith('@'):
-                    target = text
+                if is_valid_target(text):
+                    target = clean_target(text)
                     user_states.pop(user_id, None)
                     await upd("⏳ Отправка Telethon...")
                     result = await send_telethon_report(user_id, target, edit_callback=None)
@@ -1544,11 +1727,11 @@ async def main_bot():
                     )
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
-                    await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    await upd("❌ Пришлите ссылку (например, @username или https://t.me/username)", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_operator_target':
-                if 't.me/' in text or text.startswith('@'):
+                if is_valid_target(text):
                     username = text.replace('https://t.me/', '').replace('@', '')
                     user_states.pop(user_id, None)
                     await upd("⏳ Отправка оператору...")
@@ -1573,12 +1756,12 @@ async def main_bot():
                     )
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
-                    await upd("❌ Неверный юзернейм.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    await upd("❌ Пришлите ссылку (например, @username или https://t.me/username)", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_ai_target':
-                if 't.me/' in text or text.startswith('@'):
-                    target = text
+                if is_valid_target(text):
+                    target = clean_target(text)
                     user_states.pop(user_id, None)
                     if user_id not in user_data:
                         user_data[user_id] = {}
@@ -1617,7 +1800,7 @@ async def main_bot():
                     )
                     await upd(report, buttons)
                 else:
-                    await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    await upd("❌ Пришлите ссылку (например, @channel или https://t.me/channel)", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_mix_description':
@@ -1683,48 +1866,13 @@ async def main_bot():
                         await upd("❌ Нет получателей.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                         user_states.pop(user_id, None)
                         return
-                    subject = user_data[user_id].get('mail_subject', '')
-                    body = user_data[user_id].get('mail_body', '')
-                    creds = load_mail_creds()
-                    max_mails = len(creds)
-                    if max_mails == 0:
-                        await upd("❌ Нет аккаунтов в mail.txt", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                        user_states.pop(user_id, None)
-                        return
                     
-                    await upd(f"⏳ Отправка писем...\n📊 Аккаунтов: {max_mails}\n📧 Получателей: {len(targets)}\n⏳ Подождите...")
-                    
-                    # Запускаем рассылку в отдельном потоке
-                    loop = asyncio.get_running_loop()
-                    results = await loop.run_in_executor(
-                        None,
-                        run_mailer,
-                        creds,
-                        targets,
-                        subject,
-                        body,
-                        max_mails
-                    )
-                    
-                    success_count = sum(1 for r in results if "УСПЕШНО" in r)
-                    error_count = len(results) - success_count
-                    
-                    # Логируем в канал
-                    await send_log_to_channel(
-                        user_id=user_id,
-                        username=None,
-                        method="Рассылка",
-                        target="email",
-                        au_success=success_count,
-                        au_total=len(results),
-                        status="✅ Рассылка завершена"
-                    )
-                    
-                    # Показываем пользователю
-                    report_text = f"📧 РАССЫЛКА ЗАВЕРШЕНА\n\n✅ Успешно: {success_count}\n❌ Ошибок: {error_count}\n📊 Всего: {len(results)}"
-                    await upd(report_text, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                    user_states.pop(user_id, None)
-                    user_data.pop(user_id, None)
+                    # Показываем кнопку "Отправить" вместо автоматической отправки
+                    buttons = [
+                        [KeyboardButtonCallback("📧 Отправить", b"send_mail")],
+                        [KeyboardButtonCallback("🔙 Назад", b"main_menu")]
+                    ]
+                    await upd(f"📧 ГОТОВО К ОТПРАВКЕ\n\n📝 Тема: {user_data[user_id].get('mail_subject', '')}\n📧 Получателей: {len(targets)}\n\nНажмите кнопку для отправки.", buttons)
                 return
 
             if state == 'waiting_support_message':
