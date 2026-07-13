@@ -478,7 +478,6 @@ def is_valid_target(text):
     """Проверяет, является ли текст ссылкой на Telegram"""
     if not text:
         return False
-    # Проверяем, что начинается с @ или содержит t.me/
     if text.startswith('@'):
         return True
     if 't.me/' in text:
@@ -488,14 +487,30 @@ def is_valid_target(text):
 def clean_target(text):
     """Очищает цель, убирая лишние символы"""
     text = text.strip()
-    # Если это @username — оставляем как есть
     if text.startswith('@'):
         return text
-    # Если это t.me/ — оставляем как есть
     if 't.me/' in text:
         return text
-    # Иначе возвращаем как есть (но такого быть не должно)
     return text
+
+def extract_username(target):
+    """Извлекает чистый юзернейм из ссылки или @username"""
+    if not target:
+        return None
+    # Убираем https://t.me/
+    if 't.me/' in target:
+        # Берём часть после t.me/
+        parts = target.split('t.me/')
+        if len(parts) > 1:
+            username = parts[1]
+            # Если есть / и это ID сообщения, берём только юзернейм
+            if '/' in username:
+                username = username.split('/')[0]
+            return username
+    # Убираем @
+    if target.startswith('@'):
+        return target.replace('@', '')
+    return target
 
 async def send_mix_report(user_id, target, text, edit_callback=None):
     all_sessions = []
@@ -541,7 +556,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             print(f"[AU] {session_name} ⏳ Отправка... ({current}/{total})")
             await client.send_message('@AUReportBot', '/start')
             await asyncio.sleep(2)
-            await client.send_message('@AUReportBot', clean_target)  # Отправляем ссылку без @
+            await client.send_message('@AUReportBot', clean_target)
             await asyncio.sleep(2)
             async for msg in client.iter_messages('@AUReportBot', limit=5):
                 if msg.buttons:
@@ -600,7 +615,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             print(f"[US] {session_name} ⏳ Отправка... ({current}/{total})")
             await client.send_message('@TIDABot', '/start')
             await asyncio.sleep(2)
-            await client.send_message('@TIDABot', clean_target)  # Отправляем ссылку без @
+            await client.send_message('@TIDABot', clean_target)
             await asyncio.sleep(2)
             async for msg in client.iter_messages('@TIDABot', limit=5):
                 if msg.buttons:
@@ -755,6 +770,13 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             await edit_callback("❌ Неверная ссылка")
         return "❌ Неверная ссылка"
 
+    # Извлекаем чистый юзернейм
+    username = extract_username(target)
+    if not username:
+        if edit_callback:
+            await edit_callback("❌ Не удалось извлечь юзернейм из ссылки")
+        return "❌ Не удалось извлечь юзернейм из ссылки"
+
     # Проверяем, является ли цель ботом (по наличию @ в начале или t.me/ без ID сообщения)
     is_bot = False
     if target.startswith('@'):
@@ -765,6 +787,11 @@ async def send_telethon_report(user_id, target, edit_callback=None):
         # Если в ссылке нет ID сообщения (/число) — считаем ботом
         if not re.search(r't\.me/[^/]+/\d+', target):
             is_bot = True
+    
+    # Проверяем, является ли цель сообщением
+    message_match = re.search(r't\.me/([^/]+)/(\d+)', target)
+    is_message = bool(message_match)
+    chat_username = message_match.group(1) if is_message else None
     
     # Если цель — бот, используем только одну сессию и имитируем поведение микса
     if is_bot:
@@ -781,9 +808,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             return "❌ Нет живых сессий для отправки боту"
         
         try:
-            # Очищаем цель
-            clean_target = target.replace('@', '').replace('https://t.me/', '')
-            bot_username = f"@{clean_target}"
+            bot_username = f"@{username}"  # Просто @username, без t.me/
             
             print(f"[Telethon-Bot] Отправка на {bot_username}")
             
@@ -792,7 +817,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             await asyncio.sleep(2)
             
             # Отправляем ссылку (без @)
-            link = f"https://t.me/{clean_target}"
+            link = f"https://t.me/{username}"
             await client.send_message(bot_username, link)
             await asyncio.sleep(2)
             
@@ -819,8 +844,11 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             
             await client.disconnect()
             
+            # Статистика
+            result_text = f"✅ Telethon — отправлено: 1\n❌ Ошибок: 0"
+            
             if edit_callback:
-                await edit_callback("✅ Telethon — отправлено (бот)")
+                await edit_callback(result_text)
             await send_log_to_channel(
                 user_id=user_id,
                 username=None,
@@ -830,7 +858,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 au_total=1,
                 status="✅ Отправка завершена"
             )
-            return "✅ Telethon — отправлено (бот)"
+            return result_text
             
         except Exception as e:
             if client:
@@ -840,23 +868,8 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 await edit_callback(error_msg)
             return error_msg
     
-    # Если цель — не бот (канал/пользователь), используем все сессии параллельно
+    # Если цель — не бот (канал/пользователь/сообщение), используем все сессии параллельно
     else:
-        # Определяем, является ли цель сообщением или каналом
-        message_link_pattern = r'https://t\.me/([^/]+)/(\d+)'
-        match = re.search(message_link_pattern, target)
-        if match:
-            chat_username = match.group(1)
-            is_message = True
-        else:
-            is_message = False
-            if 't.me/' in target:
-                target = target.replace('https://t.me/', '')
-                if '/' in target:
-                    target = target.split('/')[0]
-            if not target.startswith('@'):
-                target = '@' + target
-
         total = len(all_sessions)
         errors = 0
         success_count = 0
@@ -874,12 +887,13 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 return
 
             try:
-                if is_message:
+                if is_message and chat_username:
+                    # Жалоба на сообщение (на канал)
                     try:
-                        chat = await client.get_entity(chat_username)
+                        chat = await client.get_entity(f"@{chat_username}")
                         await client(ReportPeerRequest(peer=chat, reason=InputReportReasonSpam(), message=""))
                         success_count += 1
-                        print(f"[{session_name}] ✅ Успешно")
+                        print(f"[{session_name}] ✅ Успешно (сообщение)")
                     except UsernameNotOccupiedError:
                         errors += 1
                         print(f"[{session_name}] ❌ Канал не найден")
@@ -891,8 +905,9 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                         errors += 1
                         print(f"[{session_name}] ❌ {str(e)[:50]}")
                 else:
+                    # Жалоба на канал/пользователя
                     try:
-                        entity = await client.get_entity(target)
+                        entity = await client.get_entity(f"@{username}")
                         await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
                         success_count += 1
                         print(f"[{session_name}] ✅ Успешно")
@@ -924,13 +939,11 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             status="✅ Отправка завершена"
         )
 
-        result = f"✅ Telethon — ОТПРАВЛЕНО ({success_count}/{total})"
-        if errors > 0:
-            result += f"\n⚠️ Ошибок: {errors}"
+        result_text = f"✅ Telethon — отправлено: {success_count}\n❌ Ошибок: {errors}"
 
         if edit_callback:
-            await edit_callback(result)
-        return result
+            await edit_callback(result_text)
+        return result_text
 
 class AIAnalyzer:
     def __init__(self):
@@ -1677,14 +1690,11 @@ async def main_bot():
             user_id = event.sender_id
             text = event.message.text.strip()
             state = user_states.get(user_id)
-            # НЕ УДАЛЯЕМ СООБЩЕНИЯ ПОЛЬЗОВАТЕЛЯ
-            # await event.delete()  <-- УБРАНО!
             
             async def upd(msg_text, buttons=None):
                 await update_message(event, msg_text, buttons)
 
             if state == 'waiting_mix_target':
-                # Проверяем, что введено @username или t.me/...
                 if is_valid_target(text):
                     target = clean_target(text)
                     if user_id not in user_data:
