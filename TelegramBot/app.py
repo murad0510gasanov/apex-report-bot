@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ФИНАЛЬНАЯ ВЕРСИЯ)
+# app.py — APEX REPORT (С МЕЙЛЕРОМ)
 import os
 import sys
 import json
@@ -6,7 +6,11 @@ import asyncio
 import re
 import random
 import time
+import smtplib
+import threading
 from datetime import datetime, timedelta
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from aiohttp import web
 import aiohttp
 from io import BytesIO
@@ -56,11 +60,68 @@ LOG_FILE = os.path.join(BASE_DIR, 'bot_analytics.json')
 SUBS_FILE = os.path.join(BASE_DIR, 'subscriptions.json')
 REQUESTS_FILE = os.path.join(BASE_DIR, 'requests.json')
 ERROR_LOG = os.path.join(BASE_DIR, 'errors.log')
+MAIL_FILE = os.path.join(BASE_DIR, 'mail.txt')
 
 _subs_cache = {}
 _subs_cache_time = 0
 pending_requests = {}
 bot_instance = None
+
+def load_mail_creds():
+    """Загружает аккаунты из mail.txt"""
+    if not os.path.exists(MAIL_FILE):
+        return []
+    creds = []
+    with open(MAIL_FILE, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if ':' in line:
+                parts = line.split(':', 1)
+                creds.append((parts[0], parts[1]))
+    return creds
+
+def send_mail_sync(sender, passwd, target, subject, body, idx, total, results):
+    """Отправляет одно письмо (синхронно, для потока)"""
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = sender
+        msg['To'] = target
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+        with smtplib.SMTP('smtp.gmail.com', 587) as s:
+            s.starttls()
+            s.login(sender, passwd)
+            s.send_message(msg)
+        results.append(f"[{idx+1}/{total}] {sender} -> {target} : УСПЕШНО ✅")
+    except Exception as e:
+        results.append(f"[{idx+1}/{total}] {sender} -> {target} : ПРОВАЛ ❌ ({str(e)[:30]})")
+
+def run_mailer(creds, targets, subject, body, max_per_account):
+    """Запускает рассылку в потоках"""
+    results = []
+    threads = []
+    used = 0
+    total_creds = len(creds)
+    
+    for target in targets:
+        for i in range(max_per_account):
+            if used >= total_creds:
+                break
+            sender, pwd = creds[used]
+            th = threading.Thread(
+                target=send_mail_sync,
+                args=(sender, pwd, target, subject, body, used, total_creds, results)
+            )
+            threads.append(th)
+            th.start()
+            used += 1
+        if used >= total_creds:
+            break
+    
+    for th in threads:
+        th.join()
+    
+    return results
 
 def log_error(msg):
     try:
@@ -176,6 +237,8 @@ async def send_log_to_channel(
             log_text += f"📊 Результат: {au_success}/{au_total}\n"
         elif method == "Веб-жалоба":
             log_text += f"📊 Результат: {au_success}/{au_total}\n"
+        elif method == "Рассылка":
+            log_text += f"📊 Отправлено: {au_success}/{au_total}\n"
     try:
         await bot_instance.send_message(CHANNEL_ID, log_text)
     except Exception as e:
@@ -571,7 +634,6 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
     )
     return "✅ Микс-жалоба отправлена!"
 
-# ===== ОПЕРАТОР (ТОЛЬКО МИКС) =====
 async def send_operator_report(user_id, username, edit_callback=None):
     try:
         username = username.replace('https://t.me/', '').replace('@', '')
@@ -604,6 +666,43 @@ async def send_operator_report(user_id, username, edit_callback=None):
             if edit_callback:
                 await edit_callback(f"❌ Оператор {username} — не удалось отправить жалобу")
             return f"❌ Оператор {username} — не удалось отправить жалобу"
+    except Exception as e:
+        result = f"❌ Ошибка: {str(e)[:50]}"
+        if edit_callback:
+            await edit_callback(result)
+        return result
+
+async def send_web_complaint(user_id, text, edit_callback=None):
+    try:
+        phone = generate_phone()
+        name = "User Complaint"
+        
+        success, msg = await send_web_report(RUCAPTCHA_API_KEY, name, phone, text)
+        if success:
+            await send_log_to_channel(
+                user_id=user_id,
+                username=None,
+                method="Веб-жалоба",
+                target="telegram.org/support",
+                au_success=1,
+                au_total=1,
+                status="✅ Отправка завершена"
+            )
+            if edit_callback:
+                await edit_callback("✅ Веб-жалоба отправлена")
+            return "✅ Веб-жалоба отправлена"
+        else:
+            await send_log_to_channel(
+                user_id=user_id,
+                username=None,
+                method="Веб-жалоба",
+                target="telegram.org/support",
+                status="❌ Ошибка отправки",
+                error=msg
+            )
+            if edit_callback:
+                await edit_callback(f"❌ Ошибка: {msg}")
+            return f"❌ Ошибка: {msg}"
     except Exception as e:
         result = f"❌ Ошибка: {str(e)[:50]}"
         if edit_callback:
@@ -735,9 +834,7 @@ class AIAnalyzer:
                 results[category] = min(50 + (count * 10), 100)
             else:
                 results[category] = 0
-        return results
-
-    def get_violation(self, results):
+        return results    def get_violation(self, results):
         sorted_results = sorted(results.items(), key=lambda x: x[1], reverse=True)
         for cat, percent in sorted_results:
             if percent >= 30:
@@ -1207,6 +1304,7 @@ async def main_bot():
                     [KeyboardButtonCallback("⚡ Telethon", b"telethon_report")],
                     [KeyboardButtonCallback("🔍 AI-анализ", b"ai_analyze")],
                     [KeyboardButtonCallback("👤 Оператор", b"operator")],
+                    [KeyboardButtonCallback("📧 Рассылка", b"mailer_menu")],
                     [KeyboardButtonCallback("🛠 Поддержка", b"support")],
                     [KeyboardButtonCallback("🔙 Назад", b"back_to_start")]
                 ]
@@ -1325,6 +1423,18 @@ async def main_bot():
                 await upd("🔍 AI-АНАЛИЗ\n\nОтправь ссылку\n@channel или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
+            if data == "mailer_menu":
+                if not has_subscription(user_id):
+                    await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
+                    return
+                creds = load_mail_creds()
+                if not creds:
+                    await upd("❌ Нет аккаунтов для рассылки. Добавьте их в файл mail.txt", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    return
+                user_states[user_id] = 'waiting_mailer_subject'
+                await upd("📧 РАССЫЛКА\n\nВведите тему письма:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                return
+
             if data == "mix_drugs_yes":
                 if user_id not in user_data:
                     user_data[user_id] = {}
@@ -1366,6 +1476,15 @@ async def main_bot():
                     'links': links
                 })
                 save_data(data)
+                await send_log_to_channel(
+                    user_id=target_user_id,
+                    username=None,
+                    method="AI-жалоба",
+                    target=target,
+                    au_success=1,
+                    au_total=1,
+                    status="✅ Отправка завершена"
+                )
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
@@ -1379,22 +1498,6 @@ async def main_bot():
             await event.delete()
             async def upd(msg_text, buttons=None):
                 await update_message(event, msg_text, buttons)
-
-            if state == 'waiting_support_message':
-                user_states.pop(user_id, None)
-                user = await bot.get_entity(user_id)
-                username = f"@{user.username}" if user.username else f"ID {user.id}"
-                support_text = f"📩 НОВОЕ СООБЩЕНИЕ В ПОДДЕРЖКУ\n\n"
-                support_text += f"👤 Пользователь: {username}\n"
-                support_text += f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
-                support_text += f"📝 Текст:\n{text}"
-                try:
-                    await bot.send_message(ADMIN_IDS[0], support_text)
-                    await upd("✅ Ваше сообщение отправлено в поддержку. Мы ответим вам в ближайшее время.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                except Exception as e:
-                    log_error(f"Support error: {e}")
-                    await upd(f"❌ Ошибка отправки: {str(e)[:50]}", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                return
 
             if state == 'waiting_mix_target':
                 if 't.me/' in text or text.startswith('@'):
@@ -1428,6 +1531,15 @@ async def main_bot():
                         'user': user_id
                     })
                     save_data(data)
+                    await send_log_to_channel(
+                        user_id=user_id,
+                        username=None,
+                        method="Telethon",
+                        target=target,
+                        au_success=1,
+                        au_total=1,
+                        status="✅ Отправка завершена"
+                    )
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1435,7 +1547,7 @@ async def main_bot():
 
             if state == 'waiting_operator_target':
                 if 't.me/' in text or text.startswith('@'):
-                    username = text
+                    username = text.replace('https://t.me/', '').replace('@', '')
                     user_states.pop(user_id, None)
                     await upd("⏳ Отправка оператору...")
                     result = await send_operator_report(user_id, username, edit_callback=None)
@@ -1448,6 +1560,15 @@ async def main_bot():
                         'user': user_id
                     })
                     save_data(data)
+                    await send_log_to_channel(
+                        user_id=user_id,
+                        username=None,
+                        method="Оператор",
+                        target=f"@{username}",
+                        au_success=1,
+                        au_total=1,
+                        status="✅ Отправка завершена"
+                    )
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
                     await upd("❌ Неверный юзернейм.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1483,6 +1604,15 @@ async def main_bot():
                         [KeyboardButtonCallback("🔙 Назад", b"main_menu")]
                     ]
                     user_data[user_id]['last_ai_description'] = f"Violation type: {violation}. Found in {len(result.get('messages', []))} messages."
+                    await send_log_to_channel(
+                        user_id=user_id,
+                        username=None,
+                        method="AI-анализ",
+                        target=target,
+                        au_success=1,
+                        au_total=1,
+                        status=f"🔍 Нарушение: {violation.upper()} ({severity.upper()})"
+                    )
                     await upd(report, buttons)
                 else:
                     await upd("❌ Неверная ссылка.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
@@ -1515,7 +1645,102 @@ async def main_bot():
                     'links': links
                 })
                 save_data(data)
+                await send_log_to_channel(
+                    user_id=user_id,
+                    username=None,
+                    method="Микс",
+                    target=target,
+                    au_success=1,
+                    au_total=1,
+                    status="✅ Отправка завершена"
+                )
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                return
+
+            if state == 'waiting_mailer_subject':
+                user_states[user_id] = 'waiting_mailer_body'
+                user_data[user_id]['mail_subject'] = text
+                await upd("📧 Введите текст письма:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                return
+
+            if state == 'waiting_mailer_body':
+                user_states[user_id] = 'waiting_mailer_targets'
+                user_data[user_id]['mail_body'] = text
+                await upd("📧 Введите получателей (по одному, пустая строка — конец):", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                return
+
+            if state == 'waiting_mailer_targets':
+                if text:
+                    if 'mail_targets' not in user_data[user_id]:
+                        user_data[user_id]['mail_targets'] = []
+                    user_data[user_id]['mail_targets'].append(text)
+                    await upd(f"📧 Добавлен: {text}\nВведите следующего получателя или отправьте пустую строку для начала рассылки:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                else:
+                    targets = user_data[user_id].get('mail_targets', [])
+                    if not targets:
+                        await upd("❌ Нет получателей.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                        user_states.pop(user_id, None)
+                        return
+                    subject = user_data[user_id].get('mail_subject', '')
+                    body = user_data[user_id].get('mail_body', '')
+                    creds = load_mail_creds()
+                    max_mails = len(creds)
+                    if max_mails == 0:
+                        await upd("❌ Нет аккаунтов в mail.txt", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                        user_states.pop(user_id, None)
+                        return
+                    
+                    await upd(f"⏳ Отправка писем...\n📊 Аккаунтов: {max_mails}\n📧 Получателей: {len(targets)}\n⏳ Подождите...")
+                    
+                    # Запускаем рассылку в отдельном потоке
+                    loop = asyncio.get_running_loop()
+                    results = await loop.run_in_executor(
+                        None,
+                        run_mailer,
+                        creds,
+                        targets,
+                        subject,
+                        body,
+                        max_mails
+                    )
+                    
+                    success_count = sum(1 for r in results if "УСПЕШНО" in r)
+                    error_count = len(results) - success_count
+                    
+                    # Логируем в канал
+                    await send_log_to_channel(
+                        user_id=user_id,
+                        username=None,
+                        method="Рассылка",
+                        target="email",
+                        au_success=success_count,
+                        au_total=len(results),
+                        status="✅ Рассылка завершена"
+                    )
+                    
+                    # Показываем пользователю
+                    report_text = f"📧 РАССЫЛКА ЗАВЕРШЕНА\n\n✅ Успешно: {success_count}\n❌ Ошибок: {error_count}\n📊 Всего: {len(results)}"
+                    await upd(report_text, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    user_states.pop(user_id, None)
+                    user_data.pop(user_id, None)
+                return
+
+            if state == 'waiting_support_message':
+                user_states.pop(user_id, None)
+                user = await bot.get_entity(user_id)
+                username = f"@{user.username}" if user.username else f"ID {user.id}"
+                
+                support_text = f"📩 НОВОЕ СООБЩЕНИЕ В ПОДДЕРЖКУ\n\n"
+                support_text += f"👤 Пользователь: {username}\n"
+                support_text += f"📅 Время: {datetime.now().strftime('%d.%m.%Y %H:%M')}\n\n"
+                support_text += f"📝 Текст:\n{text}"
+                
+                try:
+                    await bot.send_message(ADMIN_IDS[0], support_text)
+                    await upd("✅ Ваше сообщение отправлено в поддержку. Мы ответим вам в ближайшее время.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                except Exception as e:
+                    log_error(f"Support error: {e}")
+                    await upd(f"❌ Ошибка отправки: {str(e)[:50]}", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
         @bot.on(events.NewMessage(pattern='/cancel'))
