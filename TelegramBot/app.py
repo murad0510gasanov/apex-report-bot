@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ)
+# app.py — APEX REPORT (ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ, БЕЗ MAILER)
 import os
 import sys
 import json
@@ -6,11 +6,8 @@ import asyncio
 import re
 import random
 import time
-import smtplib
 import threading
 from datetime import datetime, timedelta
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from aiohttp import web
 import aiohttp
 from io import BytesIO
@@ -60,73 +57,11 @@ LOG_FILE = os.path.join(BASE_DIR, 'bot_analytics.json')
 SUBS_FILE = os.path.join(BASE_DIR, 'subscriptions.json')
 REQUESTS_FILE = os.path.join(BASE_DIR, 'requests.json')
 ERROR_LOG = os.path.join(BASE_DIR, 'errors.log')
-MAIL_FILE = os.path.join(BASE_DIR, 'mail.txt')
 
 _subs_cache = {}
 _subs_cache_time = 0
 pending_requests = {}
 bot_instance = None
-
-def load_mail_creds():
-    if not os.path.exists(MAIL_FILE):
-        return []
-    creds = []
-    with open(MAIL_FILE, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if ':' in line:
-                parts = line.split(':', 1)
-                creds.append((parts[0], parts[1]))
-    return creds
-
-def send_mail_sync(sender, passwd, target, subject, body, idx, total, results):
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = sender
-        msg['To'] = target
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
-        with smtplib.SMTP('smtp.gmail.com', 587) as s:
-            s.starttls()
-            s.login(sender, passwd)
-            s.send_message(msg)
-        results.append(f"[{idx+1}/{total}] {sender} -> {target} : УСПЕШНО ✅")
-    except Exception as e:
-        error_msg = str(e)
-        if "Authentication failed" in error_msg:
-            error_msg = "Неверный пароль или аккаунт заблокирован"
-        elif "Daily limit" in error_msg:
-            error_msg = "Дневной лимит отправки исчерпан"
-        elif "Username and Password not accepted" in error_msg:
-            error_msg = "Логин/пароль не приняты (включи доступ для ненадежных приложений)"
-        results.append(f"[{idx+1}/{total}] {sender} -> {target} : ПРОВАЛ ❌ ({error_msg[:50]})")
-
-def run_mailer(creds, targets, subject, body, max_per_account):
-    results = []
-    threads = []
-    used = 0
-    total_creds = len(creds)
-    
-    for target in targets:
-        for i in range(max_per_account):
-            if used >= total_creds:
-                break
-            sender, pwd = creds[used]
-            th = threading.Thread(
-                target=send_mail_sync,
-                args=(sender, pwd, target, subject, body, used, total_creds, results)
-            )
-            threads.append(th)
-            th.start()
-            time.sleep(2)
-            used += 1
-        if used >= total_creds:
-            break
-    
-    for th in threads:
-        th.join()
-    
-    return results
 
 def log_error(msg):
     try:
@@ -242,8 +177,6 @@ async def send_log_to_channel(
             log_text += f"📊 Результат: {au_success}/{au_total}\n"
         elif method == "Веб-жалоба":
             log_text += f"📊 Результат: {au_success}/{au_total}\n"
-        elif method == "Рассылка":
-            log_text += f"📊 Отправлено: {au_success}/{au_total}\n"
     try:
         await bot_instance.send_message(CHANNEL_ID, log_text)
     except Exception as e:
@@ -746,17 +679,14 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             await edit_callback("❌ Не удалось извлечь username")
         return "❌ Не удалось извлечь username"
 
-    # Проверяем, является ли цель ботом
+    # Определяем тип цели
     is_bot = False
     if clean_target.startswith('@') and '/' not in clean_target:
         is_bot = True
     elif 't.me/' in clean_target and not re.search(r't\.me/[^/]+/\d+', clean_target):
         is_bot = True
 
-    # Проверяем, является ли цель сообщением
-    message_match = re.search(r't\.me/([^/]+)/(\d+)', clean_target)
-    is_message = bool(message_match)
-    chat_username = message_match.group(1) if is_message else None
+    is_message = bool(re.search(r't\.me/[^/]+/\d+', clean_target))
 
     total = len(all_sessions)
     errors = 0
@@ -781,7 +711,6 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 
                 await client.send_message(bot_username, '/start')
                 await asyncio.sleep(2)
-                
                 await client.send_message(bot_username, clean_target)
                 await asyncio.sleep(2)
                 
@@ -808,26 +737,10 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 success_count += 1
                 print(f"[{session_name}] ✅ Успешно (бот)")
 
-            elif is_message and chat_username:
-                try:
-                    chat = await client.get_entity(f"@{chat_username}")
-                    await client(ReportPeerRequest(peer=chat, reason=InputReportReasonSpam(), message=""))
-                    success_count += 1
-                    print(f"[{session_name}] ✅ Успешно (сообщение)")
-                except UsernameNotOccupiedError:
-                    errors += 1
-                    print(f"[{session_name}] ❌ Канал не найден")
-                except FloodWaitError as e:
-                    errors += 1
-                    print(f"[{session_name}] ⏳ FloodWait {e.seconds} сек")
-                    await asyncio.sleep(min(e.seconds, 30))
-                except Exception as e:
-                    errors += 1
-                    print(f"[{session_name}] ❌ {str(e)[:50]}")
-
             else:
+                # Жалоба на канал/пользователя — используем get_input_entity
                 try:
-                    entity = await client.get_entity(f"@{username}")
+                    entity = await client.get_input_entity(f"@{username}")
                     await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
                     success_count += 1
                     print(f"[{session_name}] ✅ Успешно")
@@ -1358,7 +1271,6 @@ async def main_bot():
                     [KeyboardButtonCallback("⚡ Telethon", b"telethon_report")],
                     [KeyboardButtonCallback("🔍 AI-анализ", b"ai_analyze")],
                     [KeyboardButtonCallback("👤 Оператор", b"operator")],
-                    [KeyboardButtonCallback("📧 Рассылка", b"mailer_menu")],
                     [KeyboardButtonCallback("🛠 Поддержка", b"support")],
                     [KeyboardButtonCallback("🔙 Назад", b"back_to_start")]
                 ]
@@ -1477,18 +1389,6 @@ async def main_bot():
                 await upd("🔍 AI-АНАЛИЗ\n\nОтправь ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
-            if data == "mailer_menu":
-                if not has_subscription(user_id):
-                    await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
-                    return
-                creds = load_mail_creds()
-                if not creds:
-                    await upd("❌ Нет аккаунтов для рассылки. Добавьте их в файл mail.txt", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                    return
-                user_states[user_id] = 'waiting_mailer_subject'
-                await upd("📧 РАССЫЛКА\n\nВведите тему письма:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                return
-
             if data == "mix_drugs_yes":
                 if user_id not in user_data:
                     user_data[user_id] = {}
@@ -1540,64 +1440,6 @@ async def main_bot():
                     status="✅ Отправка завершена"
                 )
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                return
-
-            if data == "send_mail":
-                if user_id not in user_data or 'mail_targets' not in user_data.get(user_id, {}):
-                    await upd("❌ Ошибка: нет данных для рассылки.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                    return
-                
-                targets = user_data[user_id].get('mail_targets', [])
-                if not targets:
-                    await upd("❌ Нет получателей.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                    user_states.pop(user_id, None)
-                    return
-                
-                subject = user_data[user_id].get('mail_subject', '')
-                body = user_data[user_id].get('mail_body', '')
-                creds = load_mail_creds()
-                max_mails = len(creds)
-                
-                if max_mails == 0:
-                    await upd("❌ Нет аккаунтов в mail.txt", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                    user_states.pop(user_id, None)
-                    return
-                
-                await upd(f"⏳ Отправка писем...\n📊 Аккаунтов: {max_mails}\n📧 Получателей: {len(targets)}\n⏳ Подождите...")
-                
-                loop = asyncio.get_running_loop()
-                results = await loop.run_in_executor(
-                    None,
-                    run_mailer,
-                    creds,
-                    targets,
-                    subject,
-                    body,
-                    max_mails
-                )
-                
-                success_count = sum(1 for r in results if "УСПЕШНО" in r)
-                error_count = len(results) - success_count
-                
-                await send_log_to_channel(
-                    user_id=user_id,
-                    username=None,
-                    method="Рассылка",
-                    target="email",
-                    au_success=success_count,
-                    au_total=len(results),
-                    status="✅ Рассылка завершена"
-                )
-                
-                report_text = f"📧 РАССЫЛКА ЗАВЕРШЕНА\n\n✅ Успешно: {success_count}\n❌ Ошибок: {error_count}\n📊 Всего: {len(results)}"
-                await upd(report_text, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                user_states.pop(user_id, None)
-                user_data.pop(user_id, None)
-                return
-
-            if data == "add_more":
-                user_states[user_id] = 'waiting_mailer_targets'
-                await upd("📧 Введите email получателя:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
         @bot.on(events.NewMessage)
@@ -1776,52 +1618,6 @@ async def main_bot():
                     status="✅ Отправка завершена"
                 )
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                return
-
-            # ===== MAILER =====
-            if state == 'waiting_mailer_subject':
-                if user_id not in user_data:
-                    user_data[user_id] = {}
-                user_data[user_id]['mail_subject'] = text
-                await event.delete()
-                user_states[user_id] = 'waiting_mailer_body'
-                await upd("📧 Введите текст письма:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                return
-
-            if state == 'waiting_mailer_body':
-                if user_id not in user_data:
-                    user_data[user_id] = {}
-                user_data[user_id]['mail_body'] = text
-                await event.delete()
-                user_states[user_id] = 'waiting_mailer_targets'
-                await upd("📧 Введите email получателя:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                return
-
-            if state == 'waiting_mailer_targets':
-                if text:
-                    if user_id not in user_data:
-                        user_data[user_id] = {}
-                    if 'mail_targets' not in user_data[user_id]:
-                        user_data[user_id]['mail_targets'] = []
-                    user_data[user_id]['mail_targets'].append(text)
-                    await event.delete()
-                    
-                    targets_count = len(user_data[user_id]['mail_targets'])
-                    buttons = [
-                        [KeyboardButtonCallback("📧 Отправить", b"send_mail")],
-                        [KeyboardButtonCallback("➕ Добавить ещё", b"add_more")],
-                        [KeyboardButtonCallback("🔙 Назад", b"main_menu")]
-                    ]
-                    await upd(
-                        f"📧 Добавлен: {text}\n\n📧 Всего получателей: {targets_count}\n\n"
-                        f"📝 Тема: {user_data[user_id].get('mail_subject', '')}\n"
-                        f"📝 Текст: {user_data[user_id].get('mail_body', '')[:50]}...\n\n"
-                        f"Нажмите кнопку для отправки или добавьте ещё.",
-                        buttons
-                    )
-                else:
-                    await event.delete()
-                    await upd("❌ Пустая строка. Введите email или нажмите кнопку.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_support_message':
