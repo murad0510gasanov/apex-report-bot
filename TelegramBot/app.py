@@ -408,7 +408,6 @@ Format:
         return {"error": f"Ошибка AI: {str(e)[:100]}"}
 
 async def generate_complaint_text(target, violation, description, links):
-    # Отправляем цель как есть, без изменений
     prompt = f"""Generate a formal complaint in English based on this description:
 {description}
 
@@ -483,7 +482,6 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             await edit_callback("❌ Нет сессий для микса (AU + US)")
         return "❌ Нет сессий для микса"
 
-    # Отправляем target как есть, без изменений
     clean_target = target
 
     total = len(all_sessions)
@@ -637,7 +635,6 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
 
 async def send_operator_report(user_id, target, edit_callback=None):
     try:
-        # Отправляем target как есть, без изменений
         clean_target = target
         text = f"This account {clean_target} is a known operator of a drug shop. It violates Telegram's Terms of Service by facilitating the sale of illegal substances."
         
@@ -721,10 +718,8 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             await edit_callback("❌ Неверная ссылка")
         return "❌ Неверная ссылка"
 
-    # Используем target как есть, без изменений
     clean_target = target
 
-    # Проверяем, является ли цель ботом (по наличию @ в начале или t.me/ без ID сообщения)
     is_bot = False
     if clean_target.startswith('@'):
         if '/' not in clean_target:
@@ -733,7 +728,6 @@ async def send_telethon_report(user_id, target, edit_callback=None):
         if not re.search(r't\.me/[^/]+/\d+', clean_target):
             is_bot = True
 
-    # Проверяем, является ли цель сообщением
     message_match = re.search(r't\.me/([^/]+)/(\d+)', clean_target)
     is_message = bool(message_match)
     chat_username = message_match.group(1) if is_message else None
@@ -756,7 +750,6 @@ async def send_telethon_report(user_id, target, edit_callback=None):
 
         try:
             if is_bot:
-                # Для ботов — используем чистый юзернейм (убираем https://t.me/ если есть)
                 if 't.me/' in clean_target:
                     username = clean_target.split('t.me/')[-1].split('/')[0]
                 else:
@@ -764,15 +757,12 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 bot_username = f"@{username}"
                 print(f"[{session_name}] ⏳ Отправка боту {bot_username}")
                 
-                # 1. Нажимаем /start
                 await client.send_message(bot_username, '/start')
                 await asyncio.sleep(2)
                 
-                # 2. Отправляем ссылку (оригинальную)
                 await client.send_message(bot_username, clean_target)
                 await asyncio.sleep(2)
                 
-                # 3. Ищем кнопку "Жалоба"
                 found_button = False
                 async for msg in client.iter_messages(bot_username, limit=10):
                     if msg.buttons:
@@ -797,7 +787,6 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 print(f"[{session_name}] ✅ Успешно (бот)")
 
             elif is_message and chat_username:
-                # Жалоба на сообщение (на канал)
                 try:
                     chat = await client.get_entity(f"@{chat_username}")
                     await client(ReportPeerRequest(peer=chat, reason=InputReportReasonSpam(), message=""))
@@ -815,9 +804,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                     print(f"[{session_name}] ❌ {str(e)[:50]}")
 
             else:
-                # Жалоба на канал/пользователя
                 try:
-                    # Парсим username для поиска
                     if 't.me/' in clean_target:
                         username = clean_target.split('t.me/')[-1].split('/')[0]
                     else:
@@ -1599,7 +1586,6 @@ async def main_bot():
                 await update_message(event, msg_text, buttons)
 
             if state == 'waiting_mix_target':
-                # Принимаем любую ссылку как есть
                 if text:
                     target = text
                     if user_id not in user_data:
@@ -1757,35 +1743,48 @@ async def main_bot():
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
+            # ===== MAILER (ИСПРАВЛЕН) =====
             if state == 'waiting_mailer_subject':
-                await event.delete()
-                user_states[user_id] = 'waiting_mailer_body'
+                # 1. Сохраняем тему
                 user_data[user_id]['mail_subject'] = text
+                # 2. Удаляем сообщение
+                await event.delete()
+                # 3. Переключаем состояние и отвечаем
+                user_states[user_id] = 'waiting_mailer_body'
                 await upd("📧 Введите текст письма:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_mailer_body':
-                await event.delete()
-                user_states[user_id] = 'waiting_mailer_targets'
+                # 1. Сохраняем текст
                 user_data[user_id]['mail_body'] = text
+                # 2. Удаляем сообщение
+                await event.delete()
+                # 3. Переключаем состояние и отвечаем
+                user_states[user_id] = 'waiting_mailer_targets'
                 await upd("📧 Введите получателей (по одному, пустая строка — конец):", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_mailer_targets':
                 if text:
-                    await event.delete()
+                    # 1. Сохраняем email
                     if 'mail_targets' not in user_data[user_id]:
                         user_data[user_id]['mail_targets'] = []
                     user_data[user_id]['mail_targets'].append(text)
+                    # 2. Удаляем сообщение
+                    await event.delete()
+                    # 3. Отвечаем
                     await upd(f"📧 Добавлен: {text}\nВведите следующего получателя или отправьте пустую строку для начала рассылки:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
-                    await event.delete()
+                    # 1. Получаем список
                     targets = user_data[user_id].get('mail_targets', [])
+                    # 2. Удаляем пустую строку
+                    await event.delete()
                     if not targets:
                         await upd("❌ Нет получателей.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                         user_states.pop(user_id, None)
                         return
                     
+                    # 3. Показываем кнопку
                     buttons = [
                         [KeyboardButtonCallback("📧 Отправить", b"send_mail")],
                         [KeyboardButtonCallback("🔙 Назад", b"main_menu")]
