@@ -28,7 +28,7 @@ try:
     from telethon.tl.functions.account import ReportPeerRequest
     from telethon.tl.functions.channels import JoinChannelRequest
     from telethon.tl.types import InputReportReasonSpam
-    from telethon.errors import FloodWaitError, UsernameNotOccupiedError, ChannelPrivateError, AuthKeyError
+    from telethon.errors import FloodWaitError, UsernameNotOccupiedError, ChannelPrivateError
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
@@ -67,7 +67,6 @@ _subs_cache_time = 0
 pending_requests = {}
 bot_instance = None
 
-# ===== MAILER ФУНКЦИИ =====
 def load_mail_creds():
     if not os.path.exists(MAIL_FILE):
         return []
@@ -315,39 +314,29 @@ async def send_web_report(api_key, name, phone, text):
     except:
         return False, "ошибка"
 
-# ===== НОВАЯ try_connect (с нормальными таймаутами и логами) =====
-async def try_connect(session_path, timeout=15, retries=2):
+async def try_connect(session_path, timeout=15, retries=3):
     session_name = os.path.basename(session_path)
     for attempt in range(retries):
         client = None
         try:
+            if attempt > 0:
+                print(f"[{session_name}] ⏳ Повторная попытка {attempt+1}/{retries}...")
+                await asyncio.sleep(2)
             client = TelegramClient(session_path, API_ID, API_HASH)
             await asyncio.wait_for(client.start(), timeout=timeout)
-            me = await asyncio.wait_for(client.get_me(), timeout=timeout)
-            print(f"[{session_name}] ✅ Подключена (ID: {me.id})")
+            await asyncio.wait_for(client.get_me(), timeout=timeout)
+            print(f"[{session_name}] ✅ Подключена")
             return client
         except asyncio.TimeoutError:
-            print(f"[{session_name}] ⏳ Таймаут подключения (попытка {attempt+1}/{retries})")
+            print(f"[{session_name}] ⏳ Таймаут подключения")
             if client:
                 await client.disconnect()
-        except AuthKeyError:
-            print(f"[{session_name}] ❌ Невалидная сессия (AuthKeyError)")
-            if client:
-                await client.disconnect()
-            return None
         except Exception as e:
-            error_msg = str(e)
-            if "Password" in error_msg:
-                print(f"[{session_name}] 🔐 Требуется 2FA")
-            elif "phone" in error_msg:
-                print(f"[{session_name}] 📱 Требуется код подтверждения")
-            else:
-                print(f"[{session_name}] ❌ Ошибка: {error_msg[:50]}")
             if client:
                 await client.disconnect()
-        if attempt == retries - 1:
-            return None
-        await asyncio.sleep(1)
+            log_error(f"[{session_name}] ❌ Ошибка: {str(e)[:50]}")
+            if attempt == retries - 1:
+                return None
     return None
 
 def get_all_sessions():
@@ -364,7 +353,7 @@ async def get_live_session():
     if not all_sessions:
         return None
     for session_path in all_sessions:
-        client = await try_connect(session_path, timeout=10, retries=1)
+        client = await try_connect(session_path, timeout=10, retries=2)
         if client:
             return client
     return None
@@ -489,7 +478,6 @@ def generate_pdf(user_id, reports):
     buffer.seek(0)
     return buffer
 
-# ===== МИКС =====
 async def send_mix_report(user_id, target, text, edit_callback=None):
     all_sessions = []
     if os.path.exists(AU_DIR):
@@ -657,7 +645,6 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
     )
     return "✅ Микс-жалоба отправлена!"
 
-# ===== ОПЕРАТОР =====
 async def send_operator_report(user_id, target, edit_callback=None):
     try:
         clean_target = target
@@ -732,7 +719,6 @@ async def send_web_complaint(user_id, text, edit_callback=None):
             await edit_callback(result)
         return result
 
-# ===== НОВАЯ send_telethon_report (с обработкой ошибок и таймаутами) =====
 async def send_telethon_report(user_id, target, edit_callback=None):
     all_sessions = get_all_sessions()
     if not all_sessions:
@@ -746,14 +732,28 @@ async def send_telethon_report(user_id, target, edit_callback=None):
 
     clean_target = target
 
-    is_bot = False
-    if clean_target.startswith('@'):
-        if '/' not in clean_target:
-            is_bot = True
-    elif 't.me/' in clean_target:
-        if not re.search(r't\.me/[^/]+/\d+', clean_target):
-            is_bot = True
+    # Парсим username
+    username = None
+    if 't.me/' in clean_target:
+        parts = clean_target.split('t.me/')
+        if len(parts) > 1:
+            username = parts[1].split('/')[0]
+    elif clean_target.startswith('@'):
+        username = clean_target.replace('@', '')
 
+    if not username:
+        if edit_callback:
+            await edit_callback("❌ Не удалось извлечь username")
+        return "❌ Не удалось извлечь username"
+
+    # Проверяем, является ли цель ботом
+    is_bot = False
+    if clean_target.startswith('@') and '/' not in clean_target:
+        is_bot = True
+    elif 't.me/' in clean_target and not re.search(r't\.me/[^/]+/\d+', clean_target):
+        is_bot = True
+
+    # Проверяем, является ли цель сообщением
     message_match = re.search(r't\.me/([^/]+)/(\d+)', clean_target)
     is_message = bool(message_match)
     chat_username = message_match.group(1) if is_message else None
@@ -768,20 +768,14 @@ async def send_telethon_report(user_id, target, edit_callback=None):
     async def send_one(session_path, index):
         nonlocal errors, success_count
         session_name = os.path.basename(session_path)
-        client = None
-        try:
-            client = await try_connect(session_path, timeout=15, retries=2)
-            if not client:
-                errors += 1
-                print(f"[{session_name}] ❌ Не удалось подключиться")
-                return
+        client = await try_connect(session_path, timeout=15, retries=2)
+        if not client:
+            errors += 1
+            print(f"[{session_name}] ❌ Не удалось подключиться")
+            return
 
-            # ===== Если бот =====
+        try:
             if is_bot:
-                if 't.me/' in clean_target:
-                    username = clean_target.split('t.me/')[-1].split('/')[0]
-                else:
-                    username = clean_target.replace('@', '')
                 bot_username = f"@{username}"
                 print(f"[{session_name}] ⏳ Отправка боту {bot_username}")
                 
@@ -814,7 +808,6 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 success_count += 1
                 print(f"[{session_name}] ✅ Успешно (бот)")
 
-            # ===== Если сообщение =====
             elif is_message and chat_username:
                 try:
                     chat = await client.get_entity(f"@{chat_username}")
@@ -832,13 +825,8 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                     errors += 1
                     print(f"[{session_name}] ❌ {str(e)[:50]}")
 
-            # ===== Если канал/пользователь =====
             else:
                 try:
-                    if 't.me/' in clean_target:
-                        username = clean_target.split('t.me/')[-1].split('/')[0]
-                    else:
-                        username = clean_target.replace('@', '')
                     entity = await client.get_entity(f"@{username}")
                     await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
                     success_count += 1
@@ -855,17 +843,12 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                     print(f"[{session_name}] ❌ {str(e)[:50]}")
         except Exception as e:
             errors += 1
-            print(f"[{session_name}] ❌ Критическая ошибка: {str(e)[:50]}")
+            print(f"[{session_name}] ❌ Ошибка: {str(e)[:50]}")
         finally:
-            if client:
-                await client.disconnect()
+            await client.disconnect()
 
-    # ===== Запускаем все сессии параллельно с таймаутом =====
-    try:
-        tasks = [send_one(session_path, i+1) for i, session_path in enumerate(all_sessions)]
-        await asyncio.wait_for(asyncio.gather(*tasks), timeout=60)
-    except asyncio.TimeoutError:
-        print("⏳ Общий таймаут выполнения (60 сек)")
+    tasks = [send_one(session_path, i+1) for i, session_path in enumerate(all_sessions)]
+    await asyncio.gather(*tasks)
 
     print(f"\n📊 Результат: {success_count}/{total} успешно, {errors} ошибок")
 
@@ -885,7 +868,6 @@ async def send_telethon_report(user_id, target, edit_callback=None):
         await edit_callback(result_text)
     return result_text
 
-# ===== AI АНАЛИЗАТОР =====
 class AIAnalyzer:
     def __init__(self):
         self.last_result = None
@@ -1641,8 +1623,10 @@ async def main_bot():
                         [KeyboardButtonCallback("❌ Нет", b"mix_drugs_no")],
                         [KeyboardButtonCallback("🔙 Назад", b"main_menu")]
                     ]
+                    await event.delete()
                     await upd("Наркотики?", buttons)
                 else:
+                    await event.delete()
                     await upd("❌ Отправьте ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
@@ -1650,14 +1634,9 @@ async def main_bot():
                 if text:
                     target = text
                     user_states.pop(user_id, None)
+                    await event.delete()
                     await upd("⏳ Отправка Telethon...")
-                    try:
-                        result = await asyncio.wait_for(
-                            send_telethon_report(user_id, target, edit_callback=None),
-                            timeout=60
-                        )
-                    except asyncio.TimeoutError:
-                        result = "❌ Telethon — таймаут (60 сек)"
+                    result = await send_telethon_report(user_id, target, edit_callback=None)
                     data = load_data()
                     data.setdefault('reports', []).append({
                         'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1678,6 +1657,7 @@ async def main_bot():
                     )
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
+                    await event.delete()
                     await upd("❌ Отправьте ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
@@ -1685,6 +1665,7 @@ async def main_bot():
                 if text:
                     target = text
                     user_states.pop(user_id, None)
+                    await event.delete()
                     await upd("⏳ Отправка оператору...")
                     result = await send_operator_report(user_id, target, edit_callback=None)
                     data = load_data()
@@ -1707,6 +1688,7 @@ async def main_bot():
                     )
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
+                    await event.delete()
                     await upd("❌ Отправьте ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
@@ -1717,6 +1699,7 @@ async def main_bot():
                     if user_id not in user_data:
                         user_data[user_id] = {}
                     user_data[user_id]['last_ai_target'] = target
+                    await event.delete()
                     await upd("⏳ Сканирование...")
                     result, error = await analyzer.analyze_target(target, user_id, bot)
                     if error:
@@ -1751,6 +1734,7 @@ async def main_bot():
                     )
                     await upd(report, buttons)
                 else:
+                    await event.delete()
                     await upd("❌ Отправьте ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
@@ -1766,6 +1750,7 @@ async def main_bot():
                 evidence_links = parts[2].strip() if len(parts) > 2 else ""
                 violation = "drugs" if drugs == 'yes' else "violation"
                 links = [link.strip() for link in evidence_links.split(',')] if evidence_links else []
+                await event.delete()
                 await upd("⏳ Генерация текста жалобы через AI...")
                 text = await generate_complaint_text(target, violation, description, links)
                 user_states.pop(user_id, None)
@@ -1851,6 +1836,7 @@ async def main_bot():
                 
                 try:
                     await bot.send_message(ADMIN_IDS[0], support_text)
+                    await event.delete()
                     await upd("✅ Ваше сообщение отправлено в поддержку. Мы ответим вам в ближайшее время.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 except Exception as e:
                     log_error(f"Support error: {e}")
