@@ -28,7 +28,7 @@ try:
     from telethon.tl.functions.account import ReportPeerRequest
     from telethon.tl.functions.channels import JoinChannelRequest
     from telethon.tl.types import InputReportReasonSpam
-    from telethon.errors import FloodWaitError, UsernameNotOccupiedError, ChannelPrivateError
+    from telethon.errors import FloodWaitError, UsernameNotOccupiedError, ChannelPrivateError, AuthKeyError
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
@@ -67,6 +67,7 @@ _subs_cache_time = 0
 pending_requests = {}
 bot_instance = None
 
+# ===== MAILER ФУНКЦИИ =====
 def load_mail_creds():
     if not os.path.exists(MAIL_FILE):
         return []
@@ -118,7 +119,7 @@ def run_mailer(creds, targets, subject, body, max_per_account):
             )
             threads.append(th)
             th.start()
-            time.sleep(2)  # Задержка между письмами
+            time.sleep(2)
             used += 1
         if used >= total_creds:
             break
@@ -314,25 +315,39 @@ async def send_web_report(api_key, name, phone, text):
     except:
         return False, "ошибка"
 
-async def try_connect(session_path, timeout=20, retries=3):
+# ===== НОВАЯ try_connect (с нормальными таймаутами и логами) =====
+async def try_connect(session_path, timeout=15, retries=2):
     session_name = os.path.basename(session_path)
     for attempt in range(retries):
         client = None
         try:
-            if attempt > 0:
-                print(f"[{session_name}] ⏳ Повторная попытка {attempt+1}/{retries}...")
-                await asyncio.sleep(2)
             client = TelegramClient(session_path, API_ID, API_HASH)
             await asyncio.wait_for(client.start(), timeout=timeout)
-            await asyncio.wait_for(client.get_me(), timeout=timeout)
-            print(f"[{session_name}] ✅ Подключена")
+            me = await asyncio.wait_for(client.get_me(), timeout=timeout)
+            print(f"[{session_name}] ✅ Подключена (ID: {me.id})")
             return client
-        except Exception as e:
+        except asyncio.TimeoutError:
+            print(f"[{session_name}] ⏳ Таймаут подключения (попытка {attempt+1}/{retries})")
             if client:
                 await client.disconnect()
-            log_error(f"[{session_name}] ❌ Ошибка: {str(e)[:50]}")
-            if attempt == retries - 1:
-                return None
+        except AuthKeyError:
+            print(f"[{session_name}] ❌ Невалидная сессия (AuthKeyError)")
+            if client:
+                await client.disconnect()
+            return None
+        except Exception as e:
+            error_msg = str(e)
+            if "Password" in error_msg:
+                print(f"[{session_name}] 🔐 Требуется 2FA")
+            elif "phone" in error_msg:
+                print(f"[{session_name}] 📱 Требуется код подтверждения")
+            else:
+                print(f"[{session_name}] ❌ Ошибка: {error_msg[:50]}")
+            if client:
+                await client.disconnect()
+        if attempt == retries - 1:
+            return None
+        await asyncio.sleep(1)
     return None
 
 def get_all_sessions():
@@ -349,7 +364,7 @@ async def get_live_session():
     if not all_sessions:
         return None
     for session_path in all_sessions:
-        client = await try_connect(session_path, timeout=10, retries=2)
+        client = await try_connect(session_path, timeout=10, retries=1)
         if client:
             return client
     return None
@@ -474,6 +489,7 @@ def generate_pdf(user_id, reports):
     buffer.seek(0)
     return buffer
 
+# ===== МИКС =====
 async def send_mix_report(user_id, target, text, edit_callback=None):
     all_sessions = []
     if os.path.exists(AU_DIR):
@@ -641,6 +657,7 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
     )
     return "✅ Микс-жалоба отправлена!"
 
+# ===== ОПЕРАТОР =====
 async def send_operator_report(user_id, target, edit_callback=None):
     try:
         clean_target = target
@@ -715,6 +732,7 @@ async def send_web_complaint(user_id, text, edit_callback=None):
             await edit_callback(result)
         return result
 
+# ===== НОВАЯ send_telethon_report (с обработкой ошибок и таймаутами) =====
 async def send_telethon_report(user_id, target, edit_callback=None):
     all_sessions = get_all_sessions()
     if not all_sessions:
@@ -750,13 +768,15 @@ async def send_telethon_report(user_id, target, edit_callback=None):
     async def send_one(session_path, index):
         nonlocal errors, success_count
         session_name = os.path.basename(session_path)
-        client = await try_connect(session_path, timeout=20, retries=3)
-        if not client:
-            errors += 1
-            print(f"[{session_name}] ❌ Не удалось подключиться")
-            return
-
+        client = None
         try:
+            client = await try_connect(session_path, timeout=15, retries=2)
+            if not client:
+                errors += 1
+                print(f"[{session_name}] ❌ Не удалось подключиться")
+                return
+
+            # ===== Если бот =====
             if is_bot:
                 if 't.me/' in clean_target:
                     username = clean_target.split('t.me/')[-1].split('/')[0]
@@ -794,6 +814,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 success_count += 1
                 print(f"[{session_name}] ✅ Успешно (бот)")
 
+            # ===== Если сообщение =====
             elif is_message and chat_username:
                 try:
                     chat = await client.get_entity(f"@{chat_username}")
@@ -811,6 +832,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                     errors += 1
                     print(f"[{session_name}] ❌ {str(e)[:50]}")
 
+            # ===== Если канал/пользователь =====
             else:
                 try:
                     if 't.me/' in clean_target:
@@ -831,11 +853,19 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 except Exception as e:
                     errors += 1
                     print(f"[{session_name}] ❌ {str(e)[:50]}")
+        except Exception as e:
+            errors += 1
+            print(f"[{session_name}] ❌ Критическая ошибка: {str(e)[:50]}")
         finally:
-            await client.disconnect()
+            if client:
+                await client.disconnect()
 
-    tasks = [send_one(session_path, i+1) for i, session_path in enumerate(all_sessions)]
-    await asyncio.gather(*tasks)
+    # ===== Запускаем все сессии параллельно с таймаутом =====
+    try:
+        tasks = [send_one(session_path, i+1) for i, session_path in enumerate(all_sessions)]
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=60)
+    except asyncio.TimeoutError:
+        print("⏳ Общий таймаут выполнения (60 сек)")
 
     print(f"\n📊 Результат: {success_count}/{total} успешно, {errors} ошибок")
 
@@ -855,6 +885,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
         await edit_callback(result_text)
     return result_text
 
+# ===== AI АНАЛИЗАТОР =====
 class AIAnalyzer:
     def __init__(self):
         self.last_result = None
@@ -1620,7 +1651,13 @@ async def main_bot():
                     target = text
                     user_states.pop(user_id, None)
                     await upd("⏳ Отправка Telethon...")
-                    result = await send_telethon_report(user_id, target, edit_callback=None)
+                    try:
+                        result = await asyncio.wait_for(
+                            send_telethon_report(user_id, target, edit_callback=None),
+                            timeout=60
+                        )
+                    except asyncio.TimeoutError:
+                        result = "❌ Telethon — таймаут (60 сек)"
                     data = load_data()
                     data.setdefault('reports', []).append({
                         'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1756,7 +1793,7 @@ async def main_bot():
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
-            # ===== MAILER (С КНОПКАМИ) =====
+            # ===== MAILER =====
             if state == 'waiting_mailer_subject':
                 if user_id not in user_data:
                     user_data[user_id] = {}
