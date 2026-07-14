@@ -1,4 +1,4 @@
-# app.py — APEX REPORT (ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ, БЕЗ MAILER)
+# app.py — APEX REPORT (ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ)
 import os
 import sys
 import json
@@ -679,84 +679,43 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             await edit_callback("❌ Не удалось извлечь username")
         return "❌ Не удалось извлечь username"
 
-    # Определяем тип цели
-    is_bot = False
-    if clean_target.startswith('@') and '/' not in clean_target:
-        is_bot = True
-    elif 't.me/' in clean_target and not re.search(r't\.me/[^/]+/\d+', clean_target):
-        is_bot = True
-
-    is_message = bool(re.search(r't\.me/[^/]+/\d+', clean_target))
-
     total = len(all_sessions)
     errors = 0
     success_count = 0
+    error_sessions = []
 
     print(f"\n📤 Telethon — отправка на {clean_target}")
     print(f"📁 Всего сессий: {total}")
 
     async def send_one(session_path, index):
-        nonlocal errors, success_count
+        nonlocal errors, success_count, error_sessions
         session_name = os.path.basename(session_path)
         client = await try_connect(session_path, timeout=15, retries=2)
         if not client:
             errors += 1
+            error_sessions.append(session_name)
             print(f"[{session_name}] ❌ Не удалось подключиться")
             return
 
         try:
-            if is_bot:
-                bot_username = f"@{username}"
-                print(f"[{session_name}] ⏳ Отправка боту {bot_username}")
-                
-                await client.send_message(bot_username, '/start')
-                await asyncio.sleep(2)
-                await client.send_message(bot_username, clean_target)
-                await asyncio.sleep(2)
-                
-                found_button = False
-                async for msg in client.iter_messages(bot_username, limit=10):
-                    if msg.buttons:
-                        for row in msg.buttons:
-                            for btn in row:
-                                btn_text = btn.text.lower() if btn.text else ''
-                                if any(keyword in btn_text for keyword in ['жалоб', 'report', 'пожаловаться', 'complaint']):
-                                    await btn.click()
-                                    await asyncio.sleep(1)
-                                    found_button = True
-                                    print(f"[{session_name}] Нажата кнопка: {btn.text}")
-                                    break
-                            if found_button:
-                                break
-                        if found_button:
-                            break
-                
-                if not found_button:
-                    print(f"[{session_name}] ⚠️ Кнопка жалобы не найдена")
-                
-                success_count += 1
-                print(f"[{session_name}] ✅ Успешно (бот)")
-
-            else:
-                # Жалоба на канал/пользователя — используем get_input_entity
-                try:
-                    entity = await client.get_input_entity(f"@{username}")
-                    await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
-                    success_count += 1
-                    print(f"[{session_name}] ✅ Успешно")
-                except UsernameNotOccupiedError:
-                    errors += 1
-                    print(f"[{session_name}] ❌ Цель не найдена")
-                except FloodWaitError as e:
-                    errors += 1
-                    print(f"[{session_name}] ⏳ FloodWait {e.seconds} сек")
-                    await asyncio.sleep(min(e.seconds, 30))
-                except Exception as e:
-                    errors += 1
-                    print(f"[{session_name}] ❌ {str(e)[:50]}")
+            # Жалоба на профиль (без /start и кнопок)
+            entity = await client.get_input_entity(f"@{username}")
+            await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
+            success_count += 1
+            print(f"[{session_name}] ✅ Успешно")
+        except UsernameNotOccupiedError:
+            errors += 1
+            error_sessions.append(session_name)
+            print(f"[{session_name}] ❌ Цель не найдена")
+        except FloodWaitError as e:
+            errors += 1
+            error_sessions.append(session_name)
+            print(f"[{session_name}] ⏳ FloodWait {e.seconds} сек")
+            await asyncio.sleep(min(e.seconds, 30))
         except Exception as e:
             errors += 1
-            print(f"[{session_name}] ❌ Ошибка: {str(e)[:50]}")
+            error_sessions.append(session_name)
+            print(f"[{session_name}] ❌ {str(e)[:50]}")
         finally:
             await client.disconnect()
 
@@ -764,6 +723,8 @@ async def send_telethon_report(user_id, target, edit_callback=None):
     await asyncio.gather(*tasks)
 
     print(f"\n📊 Результат: {success_count}/{total} успешно, {errors} ошибок")
+    if error_sessions:
+        print(f"❌ Ошибки в сессиях: {', '.join(error_sessions)}")
 
     await send_log_to_channel(
         user_id=user_id,
