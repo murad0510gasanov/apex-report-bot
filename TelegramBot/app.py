@@ -408,14 +408,11 @@ Format:
         return {"error": f"Ошибка AI: {str(e)[:100]}"}
 
 async def generate_complaint_text(target, violation, description, links):
-    clean_target = target.replace('@', '')
-    if not clean_target.startswith('http'):
-        clean_target = f"https://t.me/{clean_target}"
-    
+    # Отправляем цель как есть, без изменений
     prompt = f"""Generate a formal complaint in English based on this description:
 {description}
 
-Channel: {clean_target}
+Channel: {target}
 Violation type: {violation}
 Links to violating messages: {', '.join(links) if links else 'No specific links'}
 
@@ -435,9 +432,9 @@ Write a formal complaint without any urgent words. Use only English. Keep it con
                     data = await resp.json()
                     return data['choices'][0]['message']['content'].strip()
                 else:
-                    return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {clean_target}\n\n{description}\n\nReported messages:\n{chr(10).join(links) if links else 'No specific links'}\n\nPlease review this content and take appropriate action.\n\nThank you."
+                    return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {target}\n\n{description}\n\nReported messages:\n{chr(10).join(links) if links else 'No specific links'}\n\nPlease review this content and take appropriate action.\n\nThank you."
     except:
-        return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {clean_target}\n\n{description}\n\nReported messages:\n{chr(10).join(links) if links else 'No specific links'}\n\nPlease review this content and take appropriate action.\n\nThank you."
+        return f"I would like to report a Telegram channel involved in {violation}.\n\nChannel: {target}\n\n{description}\n\nReported messages:\n{chr(10).join(links) if links else 'No specific links'}\n\nPlease review this content and take appropriate action.\n\nThank you."
 
 def generate_pdf(user_id, reports):
     if not REPORTLAB_AVAILABLE:
@@ -470,45 +467,6 @@ def generate_pdf(user_id, reports):
     buffer.seek(0)
     return buffer
 
-def is_valid_target(text):
-    if not text:
-        return False
-    if text.startswith('@'):
-        return True
-    if 't.me/' in text:
-        return True
-    return False
-
-def clean_target(text):
-    text = text.strip()
-    if 't.me/' in text:
-        parts = text.split('t.me/')
-        if len(parts) > 2:
-            text = 't.me/' + parts[-1]
-        elif len(parts) == 2 and parts[0].endswith('https://'):
-            text = 'https://' + text
-    if text.startswith('@'):
-        return text
-    if 't.me/' in text:
-        return text
-    return text
-
-def extract_username(target):
-    if not target:
-        return None
-    if 't.me/' in target:
-        parts = target.split('t.me/')
-        if len(parts) > 2:
-            username = parts[-1]
-        else:
-            username = parts[1] if len(parts) > 1 else parts[0]
-        if '/' in username:
-            username = username.split('/')[0]
-        return username
-    if target.startswith('@'):
-        return target.replace('@', '')
-    return target
-
 async def send_mix_report(user_id, target, text, edit_callback=None):
     all_sessions = []
     if os.path.exists(AU_DIR):
@@ -525,16 +483,8 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
             await edit_callback("❌ Нет сессий для микса (AU + US)")
         return "❌ Нет сессий для микса"
 
-    clean_target = target.replace('@', '')
-    if 't.me/' in clean_target:
-        parts = clean_target.split('t.me/')
-        if len(parts) > 2:
-            clean_target = 't.me/' + parts[-1]
-        if not clean_target.startswith('http'):
-            clean_target = 'https://' + clean_target
-    else:
-        if not clean_target.startswith('http'):
-            clean_target = f"https://t.me/{clean_target}"
+    # Отправляем target как есть, без изменений
+    clean_target = target
 
     total = len(all_sessions)
     au_sessions = [s for s in all_sessions if 'au' in s]
@@ -685,45 +635,38 @@ async def send_mix_report(user_id, target, text, edit_callback=None):
     )
     return "✅ Микс-жалоба отправлена!"
 
-async def send_operator_report(user_id, username, edit_callback=None):
+async def send_operator_report(user_id, target, edit_callback=None):
     try:
-        clean_username = username.replace('https://t.me/', '').replace('@', '')
-        if 't.me/' in clean_username:
-            parts = clean_username.split('t.me/')
-            if len(parts) > 2:
-                clean_username = parts[-1]
-            else:
-                clean_username = parts[1] if len(parts) > 1 else parts[0]
-        target_link = f"https://t.me/{clean_username}"
+        # Отправляем target как есть, без изменений
+        clean_target = target
+        text = f"This account {clean_target} is a known operator of a drug shop. It violates Telegram's Terms of Service by facilitating the sale of illegal substances."
         
-        text = f"This account {target_link} is a known operator of a drug shop. It violates Telegram's Terms of Service by facilitating the sale of illegal substances."
-        
-        result = await send_mix_report(user_id, target_link, text, edit_callback=None)
+        result = await send_mix_report(user_id, clean_target, text, edit_callback=None)
         if "✅" in result:
             await send_log_to_channel(
                 user_id=user_id,
                 username=None,
                 method="Оператор (микс)",
-                target=target_link,
+                target=clean_target,
                 au_success=1,
                 au_total=1,
                 status="✅ Отправка завершена"
             )
             if edit_callback:
-                await edit_callback(f"✅ Оператор {clean_username} — жалоба отправлена (микс)")
-            return f"✅ Оператор {clean_username} — жалоба отправлена (микс)"
+                await edit_callback(f"✅ Оператор {clean_target} — жалоба отправлена (микс)")
+            return f"✅ Оператор {clean_target} — жалоба отправлена (микс)"
         else:
             await send_log_to_channel(
                 user_id=user_id,
                 username=None,
                 method="Оператор (микс)",
-                target=target_link,
+                target=clean_target,
                 status="❌ Ошибка отправки",
                 error="Не удалось отправить жалобу через микс"
             )
             if edit_callback:
-                await edit_callback(f"❌ Оператор {clean_username} — не удалось отправить жалобу")
-            return f"❌ Оператор {clean_username} — не удалось отправить жалобу"
+                await edit_callback(f"❌ Оператор {clean_target} — не удалось отправить жалобу")
+            return f"❌ Оператор {clean_target} — не удалось отправить жалобу"
     except Exception as e:
         result = f"❌ Ошибка: {str(e)[:50]}"
         if edit_callback:
@@ -778,20 +721,10 @@ async def send_telethon_report(user_id, target, edit_callback=None):
             await edit_callback("❌ Неверная ссылка")
         return "❌ Неверная ссылка"
 
+    # Используем target как есть, без изменений
     clean_target = target
-    if 't.me/' in clean_target:
-        parts = clean_target.split('t.me/')
-        if len(parts) > 2:
-            clean_target = 't.me/' + parts[-1]
-            if not clean_target.startswith('http'):
-                clean_target = 'https://' + clean_target
 
-    username = extract_username(clean_target)
-    if not username:
-        if edit_callback:
-            await edit_callback("❌ Не удалось извлечь юзернейм из ссылки")
-        return "❌ Не удалось извлечь юзернейм из ссылки"
-
+    # Проверяем, является ли цель ботом (по наличию @ в начале или t.me/ без ID сообщения)
     is_bot = False
     if clean_target.startswith('@'):
         if '/' not in clean_target:
@@ -800,6 +733,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
         if not re.search(r't\.me/[^/]+/\d+', clean_target):
             is_bot = True
 
+    # Проверяем, является ли цель сообщением
     message_match = re.search(r't\.me/([^/]+)/(\d+)', clean_target)
     is_message = bool(message_match)
     chat_username = message_match.group(1) if is_message else None
@@ -822,16 +756,23 @@ async def send_telethon_report(user_id, target, edit_callback=None):
 
         try:
             if is_bot:
+                # Для ботов — используем чистый юзернейм (убираем https://t.me/ если есть)
+                if 't.me/' in clean_target:
+                    username = clean_target.split('t.me/')[-1].split('/')[0]
+                else:
+                    username = clean_target.replace('@', '')
                 bot_username = f"@{username}"
                 print(f"[{session_name}] ⏳ Отправка боту {bot_username}")
                 
+                # 1. Нажимаем /start
                 await client.send_message(bot_username, '/start')
                 await asyncio.sleep(2)
                 
-                link = f"https://t.me/{username}"
-                await client.send_message(bot_username, link)
+                # 2. Отправляем ссылку (оригинальную)
+                await client.send_message(bot_username, clean_target)
                 await asyncio.sleep(2)
                 
+                # 3. Ищем кнопку "Жалоба"
                 found_button = False
                 async for msg in client.iter_messages(bot_username, limit=10):
                     if msg.buttons:
@@ -856,6 +797,7 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                 print(f"[{session_name}] ✅ Успешно (бот)")
 
             elif is_message and chat_username:
+                # Жалоба на сообщение (на канал)
                 try:
                     chat = await client.get_entity(f"@{chat_username}")
                     await client(ReportPeerRequest(peer=chat, reason=InputReportReasonSpam(), message=""))
@@ -873,7 +815,13 @@ async def send_telethon_report(user_id, target, edit_callback=None):
                     print(f"[{session_name}] ❌ {str(e)[:50]}")
 
             else:
+                # Жалоба на канал/пользователя
                 try:
+                    # Парсим username для поиска
+                    if 't.me/' in clean_target:
+                        username = clean_target.split('t.me/')[-1].split('/')[0]
+                    else:
+                        username = clean_target.replace('@', '')
                     entity = await client.get_entity(f"@{username}")
                     await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
                     success_count += 1
@@ -1494,7 +1442,7 @@ async def main_bot():
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
                 user_states[user_id] = 'waiting_mix_target'
-                await upd("📤 МИКС\n\nОтправь ссылку\n@username или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                await upd("📤 МИКС\n\nОтправь ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if data == "telethon_report":
@@ -1502,7 +1450,7 @@ async def main_bot():
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
                 user_states[user_id] = 'waiting_telethon_target'
-                await upd("⚡ TELEHON\n\nОтправь ссылку\n@username или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                await upd("⚡ TELEHON\n\nОтправь ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if data == "operator":
@@ -1510,7 +1458,7 @@ async def main_bot():
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
                 user_states[user_id] = 'waiting_operator_target'
-                await upd("👤 ОПЕРАТОР\n\nОтправь юзернейм\n@username или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                await upd("👤 ОПЕРАТОР\n\nОтправь ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if data == "ai_analyze":
@@ -1518,7 +1466,7 @@ async def main_bot():
                     await upd("🔒 Нет подписки.", [[KeyboardButtonCallback("🔙 Назад", b"back_to_start")]])
                     return
                 user_states[user_id] = 'waiting_ai_target'
-                await upd("🔍 AI-АНАЛИЗ\n\nОтправь ссылку\n@channel или https://t.me/...", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                await upd("🔍 AI-АНАЛИЗ\n\nОтправь ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if data == "mailer_menu":
@@ -1651,8 +1599,9 @@ async def main_bot():
                 await update_message(event, msg_text, buttons)
 
             if state == 'waiting_mix_target':
-                if is_valid_target(text):
-                    target = clean_target(text)
+                # Принимаем любую ссылку как есть
+                if text:
+                    target = text
                     if user_id not in user_data:
                         user_data[user_id] = {}
                     user_data[user_id]['target'] = target
@@ -1664,12 +1613,12 @@ async def main_bot():
                     ]
                     await upd("Наркотики?", buttons)
                 else:
-                    await upd("❌ Пришлите ссылку (например, @username или https://t.me/username)", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    await upd("❌ Отправьте ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_telethon_target':
-                if is_valid_target(text):
-                    target = clean_target(text)
+                if text:
+                    target = text
                     user_states.pop(user_id, None)
                     await upd("⏳ Отправка Telethon...")
                     result = await send_telethon_report(user_id, target, edit_callback=None)
@@ -1693,19 +1642,19 @@ async def main_bot():
                     )
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
-                    await upd("❌ Пришлите ссылку (например, @username или https://t.me/username)", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    await upd("❌ Отправьте ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_operator_target':
-                if is_valid_target(text):
-                    username = text.replace('https://t.me/', '').replace('@', '')
+                if text:
+                    target = text
                     user_states.pop(user_id, None)
                     await upd("⏳ Отправка оператору...")
-                    result = await send_operator_report(user_id, username, edit_callback=None)
+                    result = await send_operator_report(user_id, target, edit_callback=None)
                     data = load_data()
                     data.setdefault('reports', []).append({
                         'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'target': username,
+                        'target': target,
                         'type': 'Оператор',
                         'destination': 'Микс',
                         'user': user_id
@@ -1715,19 +1664,19 @@ async def main_bot():
                         user_id=user_id,
                         username=None,
                         method="Оператор",
-                        target=f"@{username}",
+                        target=target,
                         au_success=1,
                         au_total=1,
                         status="✅ Отправка завершена"
                     )
                     await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 else:
-                    await upd("❌ Пришлите ссылку (например, @username или https://t.me/username)", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    await upd("❌ Отправьте ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_ai_target':
-                if is_valid_target(text):
-                    target = clean_target(text)
+                if text:
+                    target = text
                     user_states.pop(user_id, None)
                     if user_id not in user_data:
                         user_data[user_id] = {}
@@ -1766,7 +1715,7 @@ async def main_bot():
                     )
                     await upd(report, buttons)
                 else:
-                    await upd("❌ Пришлите ссылку (например, @channel или https://t.me/channel)", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                    await upd("❌ Отправьте ссылку", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_mix_description':
