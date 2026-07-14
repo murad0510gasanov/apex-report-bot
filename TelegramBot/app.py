@@ -92,7 +92,14 @@ def send_mail_sync(sender, passwd, target, subject, body, idx, total, results):
             s.send_message(msg)
         results.append(f"[{idx+1}/{total}] {sender} -> {target} : УСПЕШНО ✅")
     except Exception as e:
-        results.append(f"[{idx+1}/{total}] {sender} -> {target} : ПРОВАЛ ❌ ({str(e)[:30]})")
+        error_msg = str(e)
+        if "Authentication failed" in error_msg:
+            error_msg = "Неверный пароль или аккаунт заблокирован"
+        elif "Daily limit" in error_msg:
+            error_msg = "Дневной лимит отправки исчерпан"
+        elif "Username and Password not accepted" in error_msg:
+            error_msg = "Логин/пароль не приняты (включи доступ для ненадежных приложений)"
+        results.append(f"[{idx+1}/{total}] {sender} -> {target} : ПРОВАЛ ❌ ({error_msg[:50]})")
 
 def run_mailer(creds, targets, subject, body, max_per_account):
     results = []
@@ -111,6 +118,7 @@ def run_mailer(creds, targets, subject, body, max_per_account):
             )
             threads.append(th)
             th.start()
+            time.sleep(2)  # Задержка между письмами
             used += 1
         if used >= total_creds:
             break
