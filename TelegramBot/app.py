@@ -1522,7 +1522,7 @@ async def main_bot():
                 return
 
             if data == "send_mail":
-                if user_id not in user_data or 'mail_targets' not in user_data[user_id]:
+                if user_id not in user_data or 'mail_targets' not in user_data.get(user_id, {}):
                     await upd("❌ Ошибка: нет данных для рассылки.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                     return
                 
@@ -1572,6 +1572,11 @@ async def main_bot():
                 await upd(report_text, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 user_states.pop(user_id, None)
                 user_data.pop(user_id, None)
+                return
+
+            if data == "add_more":
+                user_states[user_id] = 'waiting_mailer_targets'
+                await upd("📧 Введите email получателя:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
         @bot.on(events.NewMessage)
@@ -1743,53 +1748,50 @@ async def main_bot():
                 await upd(result, [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
-            # ===== MAILER (ИСПРАВЛЕН) =====
+            # ===== MAILER (С КНОПКАМИ) =====
             if state == 'waiting_mailer_subject':
-                # 1. Сохраняем тему
+                if user_id not in user_data:
+                    user_data[user_id] = {}
                 user_data[user_id]['mail_subject'] = text
-                # 2. Удаляем сообщение
                 await event.delete()
-                # 3. Переключаем состояние и отвечаем
                 user_states[user_id] = 'waiting_mailer_body'
                 await upd("📧 Введите текст письма:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_mailer_body':
-                # 1. Сохраняем текст
+                if user_id not in user_data:
+                    user_data[user_id] = {}
                 user_data[user_id]['mail_body'] = text
-                # 2. Удаляем сообщение
                 await event.delete()
-                # 3. Переключаем состояние и отвечаем
                 user_states[user_id] = 'waiting_mailer_targets'
-                await upd("📧 Введите получателей (по одному, пустая строка — конец):", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
+                await upd("📧 Введите email получателя:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_mailer_targets':
                 if text:
-                    # 1. Сохраняем email
+                    if user_id not in user_data:
+                        user_data[user_id] = {}
                     if 'mail_targets' not in user_data[user_id]:
                         user_data[user_id]['mail_targets'] = []
                     user_data[user_id]['mail_targets'].append(text)
-                    # 2. Удаляем сообщение
                     await event.delete()
-                    # 3. Отвечаем
-                    await upd(f"📧 Добавлен: {text}\nВведите следующего получателя или отправьте пустую строку для начала рассылки:", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                else:
-                    # 1. Получаем список
-                    targets = user_data[user_id].get('mail_targets', [])
-                    # 2. Удаляем пустую строку
-                    await event.delete()
-                    if not targets:
-                        await upd("❌ Нет получателей.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
-                        user_states.pop(user_id, None)
-                        return
                     
-                    # 3. Показываем кнопку
+                    targets_count = len(user_data[user_id]['mail_targets'])
                     buttons = [
                         [KeyboardButtonCallback("📧 Отправить", b"send_mail")],
+                        [KeyboardButtonCallback("➕ Добавить ещё", b"add_more")],
                         [KeyboardButtonCallback("🔙 Назад", b"main_menu")]
                     ]
-                    await upd(f"📧 ГОТОВО К ОТПРАВКЕ\n\n📝 Тема: {user_data[user_id].get('mail_subject', '')}\n📧 Получателей: {len(targets)}\n\nНажмите кнопку для отправки.", buttons)
+                    await upd(
+                        f"📧 Добавлен: {text}\n\n📧 Всего получателей: {targets_count}\n\n"
+                        f"📝 Тема: {user_data[user_id].get('mail_subject', '')}\n"
+                        f"📝 Текст: {user_data[user_id].get('mail_body', '')[:50]}...\n\n"
+                        f"Нажмите кнопку для отправки или добавьте ещё.",
+                        buttons
+                    )
+                else:
+                    await event.delete()
+                    await upd("❌ Пустая строка. Введите email или нажмите кнопку.", [[KeyboardButtonCallback("🔙 Назад", b"main_menu")]])
                 return
 
             if state == 'waiting_support_message':
