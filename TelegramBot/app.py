@@ -665,19 +665,30 @@ async def send_telethon_report(user_id, target, edit_callback=None):
 
     clean_target = target
 
-    # Парсим username
+    # Парсим цель
     username = None
-    if 't.me/' in clean_target:
+    is_bot = False
+    is_message = False
+    chat_username = None
+
+    # Проверяем, является ли цель сообщением
+    message_match = re.search(r't\.me/([^/]+)/(\d+)', clean_target)
+    if message_match:
+        is_message = True
+        chat_username = message_match.group(1)
+    elif 't.me/' in clean_target:
         parts = clean_target.split('t.me/')
         if len(parts) > 1:
             username = parts[1].split('/')[0]
+            is_bot = True
     elif clean_target.startswith('@'):
         username = clean_target.replace('@', '')
+        is_bot = True
 
-    if not username:
+    if not username and not is_message:
         if edit_callback:
-            await edit_callback("❌ Не удалось извлечь username")
-        return "❌ Не удалось извлечь username"
+            await edit_callback("❌ Не удалось извлечь цель")
+        return "❌ Не удалось извлечь цель"
 
     total = len(all_sessions)
     errors = 0
@@ -690,32 +701,69 @@ async def send_telethon_report(user_id, target, edit_callback=None):
     async def send_one(session_path, index):
         nonlocal errors, success_count, error_sessions
         session_name = os.path.basename(session_path)
-        client = await try_connect(session_path, timeout=15, retries=2)
-        if not client:
-            errors += 1
-            error_sessions.append(session_name)
-            print(f"[{session_name}] ❌ Не удалось подключиться")
-            return
-
+        client = TelegramClient(session_path, API_ID, API_HASH)
+        
         try:
-            # Жалоба на профиль (без /start и кнопок)
-            entity = await client.get_input_entity(f"@{username}")
-            await client(ReportPeerRequest(peer=entity, reason=InputReportReasonSpam(), message=""))
-            success_count += 1
-            print(f"[{session_name}] ✅ Успешно")
-        except UsernameNotOccupiedError:
-            errors += 1
-            error_sessions.append(session_name)
-            print(f"[{session_name}] ❌ Цель не найдена")
-        except FloodWaitError as e:
-            errors += 1
-            error_sessions.append(session_name)
-            print(f"[{session_name}] ⏳ FloodWait {e.seconds} сек")
-            await asyncio.sleep(min(e.seconds, 30))
+            # Подключаемся с таймаутом
+            try:
+                await asyncio.wait_for(client.start(), timeout=10)
+            except asyncio.TimeoutError:
+                errors += 1
+                error_sessions.append(session_name)
+                print(f"[{session_name}] ⏰ Таймаут подключения")
+                return
+            except Exception as e:
+                errors += 1
+                error_sessions.append(session_name)
+                print(f"[{session_name}] ❌ Ошибка авторизации: {str(e)[:50]}")
+                return
+
+            # Проверяем авторизацию
+            try:
+                await asyncio.wait_for(client.get_me(), timeout=10)
+            except:
+                errors += 1
+                error_sessions.append(session_name)
+                print(f"[{session_name}] ⚠️ Не авторизована")
+                return
+
+            # Отправляем жалобу
+            try:
+                if is_message and chat_username:
+                    # Жалоба на сообщение (на канал)
+                    chat = await client.get_entity(chat_username)
+                    await client(ReportPeerRequest(peer=chat, reason=InputReportReasonSpam(), message=""))
+                    success_count += 1
+                    print(f"[{session_name}] ✅ Жалоба на сообщение")
+                elif is_bot:
+                    # Жалоба на бота
+                    target_entity = await client.get_entity(f"@{username}")
+                    await client(ReportPeerRequest(peer=target_entity, reason=InputReportReasonSpam(), message=""))
+                    success_count += 1
+                    print(f"[{session_name}] ✅ Жалоба на бота {username}")
+                else:
+                    # Жалоба на пользователя/канал
+                    target_entity = await client.get_entity(f"@{username}")
+                    await client(ReportPeerRequest(peer=target_entity, reason=InputReportReasonSpam(), message=""))
+                    success_count += 1
+                    print(f"[{session_name}] ✅ Жалоба на {username}")
+            except FloodWaitError as e:
+                errors += 1
+                error_sessions.append(session_name)
+                print(f"[{session_name}] ⏳ FloodWait {e.seconds} сек")
+                await asyncio.sleep(min(e.seconds, 30))
+            except UsernameNotOccupiedError:
+                errors += 1
+                error_sessions.append(session_name)
+                print(f"[{session_name}] ❌ Цель не найдена")
+            except Exception as e:
+                errors += 1
+                error_sessions.append(session_name)
+                print(f"[{session_name}] ❌ {str(e)[:80]}")
         except Exception as e:
             errors += 1
             error_sessions.append(session_name)
-            print(f"[{session_name}] ❌ {str(e)[:50]}")
+            print(f"[{session_name}] ❌ Ошибка: {str(e)[:50]}")
         finally:
             await client.disconnect()
 
